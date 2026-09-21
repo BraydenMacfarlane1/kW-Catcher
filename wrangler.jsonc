@@ -17,9 +17,7 @@
     {
       "binding": "DB",
       "database_name": "kw-catcher",
-      // Replace database_id after `npx wrangler d1 create kw-catcher`.
-      // Local dev works with this placeholder; remote deploy does not.
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "0de9f52d-6073-45d9-b46c-ad7bf0a8c328",
       "migrations_dir": "migrations"
     }
   ],

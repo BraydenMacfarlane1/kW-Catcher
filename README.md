@@ -19,19 +19,19 @@ npm install
 
 Node 22 or newer.
 
-## Plug in real D1 and R2 ids
+## Cloudflare resources
 
-`wrangler.jsonc` ships with a placeholder D1 `database_id` so the repo builds before the database exists. Local dev uses that placeholder. A remote deploy needs the real id.
+`wrangler.jsonc` is wired to the existing account resources:
+
+| Binding | Resource | Name / id |
+| --- | --- | --- |
+| `DB` | D1 | database `kw-catcher`, id `0de9f52d-6073-45d9-b46c-ad7bf0a8c328` |
+| `BILLS` | R2 | bucket `kw-catcher-bills` |
+
+Log in, apply migrations to that database, then deploy:
 
 ```bash
-npx wrangler d1 create kw-catcher
-npx wrangler r2 bucket create kw-catcher-bills
-```
-
-Copy the database UUID from `wrangler d1 create` into `d1_databases[0].database_id` in `wrangler.jsonc`. The R2 binding only needs the bucket name `kw-catcher-bills` (already set). Then:
-
-```bash
-npm run types
+npx wrangler login
 npm run db:migrate:remote
 npm run deploy
 ```
