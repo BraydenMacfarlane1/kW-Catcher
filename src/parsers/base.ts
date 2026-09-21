@@ -1,3 +1,4 @@
+/** Bill fields for Sun Daddy ingest contract v1. Names are fixed; see src/contract.ts. */
 export const BILL_COLUMNS = [
   "utility",
   "customer_name",

@@ -237,6 +237,7 @@ export function parseSceBill(text: string, sourceFile: string): BillDraft {
   }
 
   const usage = extractUsageBlock(source);
+  // Keep every TOU bucket on the row. A season with no on-peak or super-off leaves that cell blank.
   row.kwh_on_peak = usage.kwh_on_peak;
   row.kwh_mid_peak = usage.kwh_mid_peak;
   row.kwh_off_peak = usage.kwh_off_peak;

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
-import { BILL_COLUMNS } from "./parsers/base";
 import { toCsv } from "./csv";
+import { csvExportColumns } from "./contract";
 import {
   createSite,
   getSite,
@@ -138,7 +138,7 @@ function fileSlug(value: string): string {
 }
 
 function csvResponse(bills: Awaited<ReturnType<typeof listBills>>, filename: string): Response {
-  const columns = [...BILL_COLUMNS, "id", "site_id", "r2_key", "created_at", "status"];
+  const columns = csvExportColumns();
   const csv = toCsv(
     columns,
     bills.map((bill) => ({
