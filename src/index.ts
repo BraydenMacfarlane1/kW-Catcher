@@ -1,6 +1,5 @@
 import { Hono } from "hono";
-import { toCsv } from "./csv";
-import { csvExportColumns } from "./contract";
+import { mountReadApi } from "./api";
 import {
   createSite,
   getSite,
@@ -10,7 +9,9 @@ import {
   listMeters,
   listSites,
 } from "./db";
+import { csvResponse, fileSlug } from "./export";
 import { missingMonths } from "./gaps";
+import { isId, isMeterId } from "./ids";
 import { ingestPdf, reparseStoredBills, type IngestResult } from "./ingest";
 import { page, renderBanner, renderHome, renderSite } from "./pages";
 
@@ -18,8 +19,11 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.onError((error, c) => {
   console.error(JSON.stringify({ message: error.message }));
+  if (c.req.path.startsWith("/api/")) return c.json({ error: "internal" }, 500);
   return c.html(page("Error", "<h1>Something went wrong.</h1><p><a href=\"/\">Back to sites</a></p>"), 500);
 });
+
+mountReadApi(app);
 
 app.get("/api/health", (c) => c.json({ ok: true }));
 
@@ -121,38 +125,12 @@ app.get("/sites/:id/meters/:meterId/export.csv", async (c) => {
   return csvResponse(bills, filename);
 });
 
-app.notFound((c) => c.html(page("Not found", "<h1>Not found</h1><p><a href=\"/\">Back to sites</a></p>"), 404));
+app.notFound((c) => {
+  if (c.req.path.startsWith("/api/")) return c.json({ error: "not_found" }, 404);
+  return c.html(page("Not found", "<h1>Not found</h1><p><a href=\"/\">Back to sites</a></p>"), 404);
+});
 
 export default app;
-
-function isId(id: string): boolean {
-  return /^[A-Za-z0-9_-]{1,80}$/.test(id);
-}
-
-function isMeterId(meterId: string): boolean {
-  return /^[A-Za-z0-9_.-]{1,80}$/.test(meterId);
-}
-
-function fileSlug(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, "_") || "export";
-}
-
-function csvResponse(bills: Awaited<ReturnType<typeof listBills>>, filename: string): Response {
-  const columns = csvExportColumns();
-  const csv = toCsv(
-    columns,
-    bills.map((bill) => ({
-      ...bill,
-      r2_key: bill.r2_key ?? "",
-    })),
-  );
-  return new Response(csv, {
-    headers: {
-      "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="${filename}"`,
-    },
-  });
-}
 
 function isMissingTable(error: unknown): boolean {
   return error instanceof Error && /no such table/i.test(error.message);
