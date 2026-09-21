@@ -59,11 +59,11 @@ That writes `migrations/0002_seed_xu_holdings.sql` (the original bill columns, s
 
 1. Open a site and upload one or more PDFs.
 2. Each file is stored in R2, text is extracted with unpdf, and the parser registry runs.
-3. Each meter on a PDF becomes its own bill row. Those rows share one R2 object (`r2_key`) and upsert on `(site_id, meter_id, billing_period_start, billing_period_end)`. kWh and demand are stored per meter and are never added together. A file that does not identify a meter and period upserts on a hash source key.
+3. Each meter on a PDF becomes its own bill row, and each billing period in a combined multi-statement PDF becomes its own bill row (the same result as uploading those months as separate PDFs). Those rows share one R2 object (`r2_key`) and upsert on `(site_id, meter_id, billing_period_start, billing_period_end)`. kWh and demand are stored per meter and per period and are never added together. A file that does not identify a meter and period upserts on a hash source key.
 4. The site page shows a separate table per `meter_id`. Missing months are computed for that meter only, between its own earliest and latest bill.
 5. If no parser matches, one `needs_parser` row is saved: the PDF and a text excerpt are kept, and bill fields are left blank (`line_items_json` is `[]`).
 6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the Sun Daddy ingest contract v1 columns, one row per meter, with no total row. `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`) are appended after the contract columns.
-7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter row).
+7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter or period row).
 
 ## Add a parser
 
@@ -77,11 +77,13 @@ export interface BillParser {
 }
 ```
 
-1. Add `src/parsers/<utility>.ts`. `match` should be strict. `parse` returns one `BillDraft` per meter and only fills fields it actually found. Do not sum meters into one row.
+1. Add `src/parsers/<utility>.ts`. `match` should be strict. `parse` returns one `BillDraft` per meter per billing period and only fills fields it actually found. Do not sum meters or periods into one row. A combined PDF is split into statements first; each statement is parsed on its own.
 2. Register it in the `PARSERS` array in `src/parsers/registry.ts`. The first match wins.
 3. Add a fixture under `test/fixtures/` and a Vitest case. Do not guess amounts for an unknown layout; return what you can and let missing required fields mark the row `failed`.
 
 `src/parsers/sce.ts` (`sce_tou_gs2_layout_v1`) is the Southern California Edison TOU-GS-2-E parser. It handles summer on/mid/off peak and winter mid/off/super-off peak, including transition bills that contain both. A PDF with several `For meter` lines and a Usage block per meter returns one row per meter. It was ported from the one-shot `extract_sce.py` extractor.
+
+`src/parsers/nvenergy.ts` (`nv_energy_lgs1_layout_v1`) is the NV Energy parser. It matches `NV Energy`, `NVEnergy`, or `nvenergy.com`. A file that contains several statements (each `PAGE 1 OF`, or each meter plus a KWH period) returns one row per billing period. Those rows share the uploaded file. LGS-1 is not time-of-use: `kwh_on_peak`, `kwh_mid_peak`, `kwh_off_peak`, and `kwh_super_off_peak` stay blank, and all usage is `kwh_total`. `demand_kw_max` comes from a single `Demand Charge` kW line. A period that only has prior/new rate demand lines leaves `demand_kw_max` blank. Charge detail lines are stored in `line_items_json`. Electric consumption and deferred energy adjustment are energy, demand charge lines are demand, and the remaining lines (facility, programs, basic service, local government fee, universal energy charge) are fees. Single-month PDFs still parse as one row.
 
 When a bill has a **Details of your new charges** section, each charge line is stored in `line_items_json` as `{label, amount_usd, category}` with category `tax`, `fee`, `energy`, `demand`, or `other`. `taxes_usd` sums lines the bill labels as tax (UUT, state tax). `fees_usd` sums fee-like labels (customer charge, franchise fees, wildfire fund, public purpose, fixed recovery, and similar). `other_charges_usd` is the residual, so energy + demand + taxes + fees + other equals `total_new_charges_usd` within rounding. The "your charges include" bullets restate dollars already inside the charge lines, so they stay out of `fees_usd` and `line_items_json`. Bills without that section leave `taxes_usd` and `fees_usd` blank, `line_items_json` as `[]`, and keep the summary other-charges amount, which still reconciles the same way.
 
@@ -93,13 +95,13 @@ npm run check
 npm run build
 ```
 
-`npm test` checks the SCE parser against `seed/xu-holdings-sce-12mo.csv`, unpdf text, `pdftotext -layout` text, and `test/fixtures/bill0-original.pdf`, plus winter, transition, unknown-utility, and gap cases.
+`npm test` checks the SCE parser against `seed/xu-holdings-sce-12mo.csv`, unpdf text, `pdftotext -layout` text, and `test/fixtures/bill0-original.pdf`, plus winter, transition, unknown-utility, and gap cases. It also checks the NV Energy parser against `test/fixtures/nv-energy-combined.pdf` (11 statements, one row per period) and the `pdftotext -layout` text of that file.
 
 ## Data model
 
 - `sites` — a location
 - `meters` — one utility meter on a site
-- `bills` — one row per meter per billing period (or one row per unmatched file). Several rows may share `r2_key` when they came from the same PDF. Totals are not rolled up across meters.
+- `bills` — one row per meter per billing period (or one row per unmatched file). Several rows may share `r2_key` when they came from the same PDF, whether that file has several meters or several billing periods. Totals are not rolled up across meters or periods.
 
 ## Sun Daddy ingest contract v1
 
