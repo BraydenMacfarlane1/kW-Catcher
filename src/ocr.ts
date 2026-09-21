@@ -40,7 +40,14 @@ interface TessModule {
   TessBaseAPI: new () => TessApi;
 }
 
-type CoreFactory = (options?: { wasmBinary?: ArrayBuffer; print?: () => void; printErr?: () => void }) => Promise<TessModule>;
+interface CoreOptions {
+  wasmBinary?: ArrayBuffer;
+  instantiateWasm?: (imports: WebAssembly.Imports, receive: (instance: WebAssembly.Instance) => unknown) => unknown;
+  print?: () => void;
+  printErr?: () => void;
+}
+
+type CoreFactory = (options?: CoreOptions) => Promise<TessModule>;
 
 let recognizerPromise: Promise<(png: Uint8Array) => Promise<string>> | undefined;
 
@@ -75,7 +82,8 @@ async function ocrPage(pdf: OpenPdf, page: number, ai?: BillVision): Promise<str
   try {
     const recognize = await localRecognizer();
     return await recognize(png);
-  } catch {
+  } catch (error) {
+    console.error("ocr failed", error instanceof Error ? error.stack ?? error.message : error);
     return "";
   }
 }
@@ -188,23 +196,56 @@ async function startCore(simd: boolean): Promise<{ api: TessApi; mod: TessModule
   try {
     const suffix = simd ? "tesseract-core-simd-lstm" : "tesseract-core-lstm";
     const factory = await loadCore(suffix);
-    const wasmBinary = await loadBytes(
-      `tesseract.js-core/${suffix}.wasm`,
-      `https://cdn.jsdelivr.net/npm/tesseract.js-core@v${CORE_VERSION}/${suffix}.wasm`,
-    );
     const trained = await loadTraineddata();
-    const mod = await factory({
-      wasmBinary,
-      print: () => undefined,
-      printErr: () => undefined,
-    });
+    const quiet = { print: () => undefined, printErr: () => undefined };
+    let mod: TessModule;
+    try {
+      const wasmBinary = await loadBytes(
+        `tesseract.js-core/${suffix}.wasm`,
+        `https://cdn.jsdelivr.net/npm/tesseract.js-core@v${CORE_VERSION}/${suffix}.wasm`,
+      );
+      mod = await callCore(factory, { ...quiet, wasmBinary });
+    } catch (error) {
+      if (!simd || !dynamicWasmBlocked(error)) throw error;
+      const { simdModule } = await import("./ocr-wasm");
+      mod = await callCore(factory, {
+        ...quiet,
+        instantiateWasm: (imports, receive) => {
+          void WebAssembly.instantiate(simdModule, imports).then(receive);
+          return {};
+        },
+      });
+    }
     mod.FS.writeFile("eng.traineddata", trained);
     const api = new mod.TessBaseAPI();
     if (api.Init(null, "eng", 1) === -1) return undefined;
     api.SetPageSegMode(6);
     return { api, mod };
-  } catch {
+  } catch (error) {
+    console.error("tesseract core failed", simd ? "simd" : "lstm", error instanceof Error ? error.stack ?? error.message : error);
     return undefined;
+  }
+}
+
+/**
+ * The core build reads `__dirname` when `process.versions.node` is a string.
+ * Workers expose that version string and do not define `__dirname`. Hiding the
+ * version for the synchronous startup makes the build take the wasmBinary path.
+ */
+function dynamicWasmBlocked(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /disallowed by embedder|code generation/i.test(message);
+}
+
+function callCore(factory: CoreFactory, options: CoreOptions): Promise<TessModule> {
+  const versions = process.versions as { node?: string };
+  const descriptor = Object.getOwnPropertyDescriptor(versions, "node");
+  if (!descriptor?.configurable) return factory(options);
+  Object.defineProperty(versions, "node", { configurable: true, enumerable: descriptor.enumerable, value: undefined });
+  try {
+    return factory(options);
+  } finally {
+    Object.defineProperty(versions, "node", descriptor);
   }
 }
 

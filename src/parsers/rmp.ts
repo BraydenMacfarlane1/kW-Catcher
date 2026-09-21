@@ -276,6 +276,17 @@ function applyCharges(row: BillDraft, items: ChargeLine[]): void {
   row.other_charges_usd = fromCents(residual);
 }
 
+const PAGE_MARK = "\n----- PAGE -----\n";
+
+/** One scanned page is one statement. Text PDFs have no page mark, so the window is the whole file. */
+function statementWindow(text: string, hit: UsageHit): { before: string; after: string } {
+  const prev = text.lastIndexOf(PAGE_MARK, hit.index);
+  const start = prev === -1 ? 0 : prev + PAGE_MARK.length;
+  const next = text.indexOf(PAGE_MARK, hit.end);
+  const end = next === -1 ? text.length : next;
+  return { before: text.slice(start, hit.index), after: text.slice(hit.end, end) };
+}
+
 function rateSchedule(beforeUsage: string): string {
   const schedules = [...beforeUsage.matchAll(/Schedule[ \t]+(\d+[A-Za-z]?)/gi)];
   return schedules.at(-1)?.[1] ?? "";
@@ -307,9 +318,10 @@ function parsePeriod(text: string, hit: UsageHit, sourceFile: string, multi: boo
   row.billing_days = hit.days;
   row.kwh_total = hit.kwh;
 
-  const before = text.slice(0, hit.index);
-  const after = text.slice(hit.end);
-  row.rate_schedule = rateSchedule(before);
+  const window = statementWindow(text, hit);
+  const before = window.before;
+  const after = window.after;
+  row.rate_schedule = rateSchedule(before) || rateSchedule(text.slice(0, hit.index));
   row.demand_kw_max = demandKw(after, hit.meter, hit.endLabel);
   row.bill_prepared_date = statementDate(before, after, BILLING_DATE);
   row.due_date = statementDate(before, after, DUE_DATE);
