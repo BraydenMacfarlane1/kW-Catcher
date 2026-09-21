@@ -214,6 +214,67 @@ ACCOUNT NUMBER: 30233408-001 7
     expect(latest?.fields.amount_due_usd).not.toBe("2703.25");
   });
 
+  it("reads Schedule 6 OCR text and keeps New Charges instead of the equal-payment installment", () => {
+    const page1 = `Rocky Mountain Power
+MILLCREEK REHAB AND NURSING
+BILLING DATE: Feb 10, 2025
+ACCOUNT NUMBER: 26317550-001 0
+Equal Payment Plan
+Payment Plan Amount +3,826.00 New Charges +5,327.45
+Amount Due $3,826.00 Current Account Balance $8,850.77
+ITEM 1 - ELECTRIC SERVICE 3520 S Highland Dr Millcreek UT
+Ct Meter Schedule 6
+348202960 |Jan9,2025 Feb 7,2025 13171 14449 [00 | 51,120 kwh
+348202960 | Demand Feb 7, 2025 |] 2.904 [00 | 116 kw
+NEW CHARGES
+Basic Charge - 3P 53.00
+Demand Charge - Winter 116 kw 11.7400000 1,361.84
+Facilities Charge 116 kw 3.9900000 462.84
+Energy Charge - Winter 51,120 kwh 0.0344050 1,758.78
+Date Due: Mar 4, 2025
+MILLCREEK UT 84106-3211
+`;
+    const page2 = page1
+      .replace("Feb 10, 2025", "Mar 11, 2025")
+      .replace("New Charges +5,327.45", "New Charges +5,178.07")
+      .replace("Amount Due $3,826.00", "Amount Due $3,826.00")
+      .replace("Jan 9, 2025 Feb 7, 2025", "Feb 7, 2025 Mar 10, 2025")
+      .replace("|Jan9,2025 Feb 7,2025", "|Feb7,2025 Mar 10,2025")
+      .replace("51,120 kwh", "50,360 kwh")
+      .replace("Demand Feb 7, 2025", "Demand Mar 10, 2025")
+      .replace("116 kw", "90 kw")
+      .replace("Date Due: Mar 4, 2025", "Date Due: Apr 2, 2025");
+    const rows = parseRockyMountainBills(`${page1}\n----- PAGE -----\n${page2}`, "scan.pdf");
+    expect(rows).toHaveLength(2);
+    const first = rows[0];
+    expect(first?.billing_period_start).toBe("2025-01-09");
+    expect(first?.billing_period_end).toBe("2025-02-07");
+    expect(first?.billing_days).toBe("29");
+    expect(first?.kwh_total).toBe("51120");
+    expect(first?.demand_kw_max).toBe("116");
+    expect(first?.rate_schedule).toBe("6");
+    expect(first?.meter_id).toBe("348202960");
+    expect(first?.customer_name).toBe("MILLCREEK REHAB AND NURSING");
+    expect(first?.customer_account).toBe("26317550-0010");
+    expect(first?.service_address).toBe("3520 S HIGHLAND DR");
+    expect(first?.service_city).toBe("MILLCREEK");
+    expect(first?.service_state).toBe("UT");
+    expect(first?.service_zip).toBe("84106-3211");
+    expect(first?.total_new_charges_usd).toBe("5327.45");
+    expect(first?.amount_due_usd).toBe("5327.45");
+    expect(first?.amount_due_usd).not.toBe("3826.00");
+    expect(first?.bill_prepared_date).toBe("2025-02-10");
+    expect(first?.due_date).toBe("2025-03-04");
+    expect(first?.kwh_on_peak).toBe("");
+    expect(first?.notes).toContain("equal payment plan");
+    expect(rows[1]?.billing_period_start).toBe("2025-02-07");
+    expect(rows[1]?.kwh_total).toBe("50360");
+    expect(rows[1]?.total_new_charges_usd).toBe("5178.07");
+    expect(rows[1]?.rate_schedule).toBe("6");
+    const outcome = parseDocument(`${page1}\n${page2}`, "scan.pdf");
+    expect(outcome.rows.every((row) => row.status === "ok")).toBe(true);
+  });
+
   it("still reads an unencrypted PDF when a password is also supplied", async () => {
     const bytes = new Uint8Array(readFileSync(new URL("./fixtures/bill0-original.pdf", import.meta.url)));
     const text = await extractPdfText(bytes, "ignored-password");
@@ -221,4 +282,26 @@ ACCOUNT NUMBER: 30233408-001 7
     expect(outcome.rows[0]?.status).toBe("ok");
     expect(outcome.rows[0]?.fields.utility).toBe("SCE");
   });
+
+  it("OCRs the scanned Schedule 6 PDF into a January 2025 row", async () => {
+    const bytes = new Uint8Array(readFileSync(new URL("./fixtures/rmp-schedule6-scanned.pdf", import.meta.url)));
+    const text = await extractPdfText(bytes);
+    expect(text.length).toBeGreaterThan(40);
+    const outcome = parseDocument(text, "rmp-schedule6-scanned.pdf");
+    expect(outcome.rows.length).toBeGreaterThan(0);
+    expect(outcome.rows.length).toBeLessThanOrEqual(11);
+    const january = outcome.rows.find((row) => row.fields.billing_period_start === "2025-01-09");
+    expect(january?.status).toBe("ok");
+    expect(january?.fields.billing_period_end).toBe("2025-02-07");
+    expect(january?.fields.kwh_total).toBe("51120");
+    expect(january?.fields.demand_kw_max).toBe("116");
+    expect(january?.fields.meter_id).toBe("348202960");
+    expect(january?.fields.rate_schedule).toBe("6");
+    expect(january?.fields.customer_account).toBe("26317550-0010");
+    expect(january?.fields.total_new_charges_usd).toBe("5327.45");
+    expect(january?.fields.amount_due_usd).not.toBe("3826.00");
+    expect(january?.fields.kwh_on_peak).toBe("");
+    const starts = outcome.rows.map((row) => row.fields.billing_period_start);
+    expect(new Set(starts).size).toBe(starts.length);
+  }, 180_000);
 });

@@ -1,4 +1,5 @@
 import { deleteOtherR2Bills, ensureMeter, saveBill } from "./db";
+import type { BillVision } from "./ocr";
 import { extractPdfText, PdfPasswordError } from "./pdf";
 import { emptyBill, type BillStatus } from "./parsers/base";
 import { parseDocument } from "./parsers/registry";
@@ -56,7 +57,7 @@ export async function ingestPdf(
 
   let outcome = parseDocument("", sourceFile);
   try {
-    const text = await extractPdfText(bytes, options.password);
+    const text = await extractPdfText(bytes, options.password, { ai: visionBinding(env) });
     outcome = parseDocument(text, sourceFile);
   } catch (error) {
     if (error instanceof PdfPasswordError) {
@@ -144,6 +145,12 @@ export async function reparseStoredBills(env: Env, siteId: string, password?: st
     results.push(...parsed);
   }
   return results;
+}
+
+function visionBinding(env: Env): BillVision | undefined {
+  if (!("AI" in env)) return undefined;
+  const binding = (env as Env & { AI?: BillVision }).AI;
+  return binding;
 }
 
 function isPdf(bytes: Uint8Array, mime: string): boolean {

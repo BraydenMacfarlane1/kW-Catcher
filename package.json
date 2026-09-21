@@ -18,11 +18,14 @@
   },
   "dependencies": {
     "hono": "^4.13.8",
+    "pngjs": "^7.0.0",
+    "tesseract.js-core": "^5.1.1",
     "unpdf": "^1.8.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260921.1",
     "@types/node": "^22.20.4",
+    "@types/pngjs": "^6.0.5",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "wrangler": "^4.136.1"

@@ -106,7 +106,7 @@ export function renderSite(input: {
         <label>PDF password <input type="password" name="pdf_password" autocomplete="off" spellcheck="false" placeholder="Required again for encrypted PDFs"></label>
         <button type="submit">Re-parse stored PDFs</button>
       </form>
-      <p class="hint">A PDF with several meters becomes one row per meter. A combined PDF becomes one row per billing period under that meter, for however many statements it contains (a full year, or longer). Those rows share the stored file. kWh and demand are never added across meters or periods. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank. One password applies to every file in that upload. Leave it blank when the PDF is not encrypted. The stored file stays as uploaded, so re-parse asks for the password again. A missing or wrong password is <code>needs_password</code> and does not fill in bill amounts.</p>
+      <p class="hint">A PDF with several meters becomes one row per meter. A combined PDF becomes one row per billing period under that meter, for however many statements it contains (a full year, or longer). Those rows share the stored file. kWh and demand are never added across meters or periods. A scanned PDF with no text layer is read with OCR, one row per statement found. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank. One password applies to every file in that upload. Leave it blank when the PDF is not encrypted. The stored file stays as uploaded, so re-parse asks for the password again. A missing or wrong password is <code>needs_password</code> and does not fill in bill amounts.</p>
     </section>
     ${sections}`,
   );

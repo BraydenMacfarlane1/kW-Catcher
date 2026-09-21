@@ -3,15 +3,19 @@ import type { ChargeCategory, ChargeLine } from "./charges";
 
 export const RMP_PARSER_ID = "rocky_mountain_power_v1";
 
-const KWH_LINE =
-  /(\d{6,})[ \t]+([A-Za-z]+ \d{1,2}, \d{4})[ \t]+([A-Za-z]+ \d{1,2}, \d{4})[ \t]+(\d+)[ \t]+[\d,]+[ \t]+[\d,]+[ \t]+[\d.]+[ \t]+([\d,]+)[ \t]+kwh/gi;
-
-const DEMAND_LINE =
-  /(\d{6,})[ \t]+Demand[ \t]+([A-Za-z]+ \d{1,2}, \d{4})[ \t]+[\d.]+[ \t]+[\d.]+[ \t]+([\d,]+)[ \t]+kw/gi;
-
-const NEW_CHARGES = /(?<!Total )New Charges[ \t]+\+?\$?[ \t]*([\d,]+\.\d{2})/gi;
+const NEW_CHARGES = /(?<!Total )New Charges[^\d\n]{0,8}([\d,]+\.\d{2})/gi;
 const BILLING_DATE = /BILLING DATE:\s*([A-Za-z]+ \d{1,2}, \d{4})/gi;
-const DUE_DATE = /DUE DATE:\s*([A-Za-z]+ \d{1,2}, \d{4})/gi;
+const DUE_DATE = /(?:DUE DATE|Date Due):\s*([A-Za-z]+ \d{1,2}, \d{4})/gi;
+const DATE_IN_LINE = /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),\s+(\d{4})\b/g;
+
+const MONTH_TYPO: Record<string, string> = {
+  feh: "Feb",
+  fab: "Feb",
+  fah: "Feb",
+  fep: "Feb",
+  fev: "Feb",
+  war: "Mar",
+};
 
 const MONTHS: Record<string, string> = {
   jan: "01",
@@ -79,6 +83,68 @@ function fromCents(cents: number): string {
   return `${sign}${Math.trunc(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
 }
 
+function canonDateToken(full: string, mon: string, day: string, year: string): string {
+  const key = mon.slice(0, 3).toLowerCase();
+  const name = MONTH_TYPO[key] ?? (MONTHS[key] ? mon.slice(0, 1).toUpperCase() + mon.slice(1, 3).toLowerCase() : "");
+  if (!name || !MONTHS[name.slice(0, 3).toLowerCase()]) return full;
+  return `${name} ${Number(day)}, ${year}`;
+}
+
+/** Glue OCR dates (`Jan9,2025`, `Feh 10, 2025`) into `Jan 9, 2025`. */
+function normalizeOcrText(text: string): string {
+  return text.replace(/\b([A-Za-z]{3,9})\.?\s*(\d{1,2}),?\s*(\d{4})\b/g, (full, mon: string, day: string, year: string) =>
+    canonDateToken(full, mon, day, year),
+  );
+}
+
+function elapsedDays(startIso: string, endIso: string): string {
+  const start = Date.parse(`${startIso}T00:00:00Z`);
+  const end = Date.parse(`${endIso}T00:00:00Z`);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return "";
+  const days = Math.round((end - start) / 86_400_000);
+  return days > 0 && days < 400 ? String(days) : "";
+}
+
+function dateLabel(match: RegExpMatchArray): string {
+  return `${match[1]} ${Number(match[2])}, ${match[3]}`;
+}
+
+function findDates(line: string): RegExpMatchArray[] {
+  return [...line.matchAll(new RegExp(DATE_IN_LINE.source, "g"))];
+}
+
+function kwhAmount(raw: string): string {
+  const token = raw.trim();
+  if (/^\d{1,3}\.\d{3}$/.test(token)) return token.replace(".", "");
+  return plainNumber(token);
+}
+
+function parseUsageLine(line: string): Omit<UsageHit, "index" | "end"> | null {
+  if (!/kwh/i.test(line)) return null;
+  if (/\benergy charge\b/i.test(line) || /\bkvarh\b/i.test(line)) return null;
+  const meter = /\b(\d{6,12})\b/.exec(line)?.[1];
+  const dates = findDates(line);
+  const start = dates[0];
+  const end = dates[1];
+  const kwhMatch = /([\d,]+\.\d{3}|[\d,]+)\s*kwh/i.exec(line);
+  if (!meter || !start || !end || start.index === undefined || end.index === undefined || !kwhMatch || kwhMatch.index === undefined) {
+    return null;
+  }
+  const between = line.slice(end.index + end[0].length, kwhMatch.index);
+  const printedDays = [...between.matchAll(/\b(\d{1,2})\b/g)]
+    .map((match) => Number(match[1]))
+    .find((value) => value >= 1 && value <= 45);
+  const startLabel = dateLabel(start);
+  const endLabel = dateLabel(end);
+  return {
+    meter,
+    startLabel,
+    endLabel,
+    days: printedDays ? String(printedDays) : elapsedDays(longToIso(startLabel), longToIso(endLabel)),
+    kwh: kwhAmount(kwhMatch[1] ?? ""),
+  };
+}
+
 function lastGroup(pattern: RegExp, text: string): string {
   const matches = [...text.matchAll(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`))];
   const last = matches.at(-1);
@@ -86,22 +152,25 @@ function lastGroup(pattern: RegExp, text: string): string {
 }
 
 function usageHits(text: string): UsageHit[] {
-  return [...text.matchAll(new RegExp(KWH_LINE.source, "gi"))].map((match) => ({
-    meter: match[1] ?? "",
-    startLabel: match[2] ?? "",
-    endLabel: match[3] ?? "",
-    days: match[4] ?? "",
-    kwh: plainNumber(match[5]),
-    index: match.index ?? 0,
-    end: (match.index ?? 0) + match[0].length,
-  }));
+  const hits: UsageHit[] = [];
+  let cursor = 0;
+  for (const line of text.split("\n")) {
+    const parsed = parseUsageLine(line);
+    if (parsed) hits.push({ ...parsed, index: cursor, end: cursor + line.length });
+    cursor += line.length + 1;
+  }
+  return hits;
 }
 
 function demandKw(text: string, meter: string, endLabel: string): string {
-  for (const match of text.matchAll(new RegExp(DEMAND_LINE.source, "gi"))) {
-    const sameMeter = (match[1] ?? "") === meter;
-    const sameEnd = (match[2] ?? "").toLowerCase() === endLabel.toLowerCase();
-    if (sameMeter && sameEnd) return plainNumber(match[3]);
+  const wanted = endLabel.toLowerCase();
+  for (const line of text.split("\n")) {
+    if (!/\bdemand\b/i.test(line) || /\bdemand charge\b/i.test(line) || !/\bkw\b/i.test(line)) continue;
+    if ((/\b(\d{6,12})\b/.exec(line)?.[1] ?? "") !== meter) continue;
+    const date = findDates(line)[0];
+    if (!date || dateLabel(date).toLowerCase() !== wanted) continue;
+    const kw = /\b(\d{1,4})\s*kw\b/i.exec(line)?.[1];
+    if (kw) return plainNumber(kw);
   }
   return "";
 }
@@ -115,19 +184,25 @@ function parseIdentity(text: string): Pick<
   "customer_name" | "customer_account" | "service_address" | "service_city" | "service_state" | "service_zip"
 > {
   const account =
-    /ACCOUNT NUMBER:\s*([\d-]+(?:[ \t]+\d)?)/i.exec(text)?.[1] ??
+    /ACCOUNT NUMBER:\s*([\d-]+(?:[ \t]+\d+)?)/i.exec(text)?.[1] ??
     /Account #[ \t]*([\d \t-]+)/i.exec(text)?.[1];
   const block =
     /(?:^|\n)([A-Z0-9][A-Z0-9 &',.-]{2,})\n+(\d+[^\n]+)\n+([A-Z][A-Z .'-]+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/.exec(
       text,
     );
+  const rehab = /\b((?:[A-Z][A-Z&'.-]*\s+){1,6}REHAB AND NURSING)\b/.exec(text);
+  const highland = /\b(\d{3,5})\s+S\.?\s+([A-Za-z]+)\s+(?:DR|DRIVE)\.?\s+([A-Za-z]+)\s+UT\b/i.exec(text);
+  const fromBlock = Boolean(block?.[1] && block?.[2]);
+  const zipNearService = highland
+    ? /\bUT\s+(\d{5}(?:-\d{4})?)/i.exec(text.slice(highland.index ?? 0))?.[1]
+    : undefined;
   return {
-    customer_name: (block?.[1] ?? "").trim(),
+    customer_name: (fromBlock ? (block?.[1] ?? "") : (rehab?.[1] ?? "")).trim(),
     customer_account: account ? normalizeAccount(account) : "",
-    service_address: (block?.[2] ?? "").trim(),
-    service_city: (block?.[3] ?? "").trim(),
-    service_state: (block?.[4] ?? "").trim(),
-    service_zip: (block?.[5] ?? "").trim(),
+    service_address: fromBlock ? (block?.[2] ?? "").trim() : highland ? `${highland[1]} S ${(highland[2] ?? "").toUpperCase()} DR` : "",
+    service_city: fromBlock ? (block?.[3] ?? "").trim() : (highland?.[3] ?? "").toUpperCase(),
+    service_state: fromBlock ? (block?.[4] ?? "").trim() : highland ? "UT" : "",
+    service_zip: fromBlock ? (block?.[5] ?? "").trim() : (zipNearService ?? ""),
   };
 }
 
@@ -203,8 +278,16 @@ function applyCharges(row: BillDraft, items: ChargeLine[]): void {
 
 function rateSchedule(beforeUsage: string): string {
   const schedules = [...beforeUsage.matchAll(/Schedule[ \t]+(\d+[A-Za-z]?)/gi)];
-  const last = schedules.at(-1)?.[1] ?? "";
-  return last;
+  return schedules.at(-1)?.[1] ?? "";
+}
+
+function statementDate(before: string, after: string, pattern: RegExp): string {
+  const prior = longToIso(lastGroup(pattern, before));
+  if (prior) return prior;
+  const page = after.split(/\n----- PAGE -----\n/)[0] ?? after;
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  const match = [...page.matchAll(new RegExp(pattern.source, flags))][0];
+  return longToIso(match?.[1] ?? "");
 }
 
 function parsePeriod(text: string, hit: UsageHit, sourceFile: string, multi: boolean, identity: ReturnType<typeof parseIdentity>): BillDraft {
@@ -228,10 +311,11 @@ function parsePeriod(text: string, hit: UsageHit, sourceFile: string, multi: boo
   const after = text.slice(hit.end);
   row.rate_schedule = rateSchedule(before);
   row.demand_kw_max = demandKw(after, hit.meter, hit.endLabel);
-  row.bill_prepared_date = longToIso(lastGroup(BILLING_DATE, before));
-  row.due_date = longToIso(lastGroup(DUE_DATE, before));
+  row.bill_prepared_date = statementDate(before, after, BILLING_DATE);
+  row.due_date = statementDate(before, after, DUE_DATE);
 
-  // Period cost is New Charges. Current Account Balance includes past due and is not the period total.
+  // Period cost is New Charges. An Equal Payment Plan "Amount Due" is the installment, not usage cost.
+  // Current Account Balance includes past due and is not the period total.
   const charges = money(lastGroup(NEW_CHARGES, before));
   row.total_new_charges_usd = charges;
   row.amount_due_usd = charges;
@@ -239,6 +323,9 @@ function parsePeriod(text: string, hit: UsageHit, sourceFile: string, multi: boo
 
   if (!row.demand_kw_max) notes.push("missing demand kw");
   if (!charges) notes.push("missing new charges");
+  if (/equal payment plan|payment plan amount/i.test(before)) {
+    notes.push("equal payment plan; period cost is New Charges, not the installment amount due");
+  }
   if (multi) notes.push("multi-statement pdf; row is this service period only");
   notes.push("non-TOU; usage in kwh_total");
 
@@ -255,7 +342,7 @@ function parsePeriod(text: string, hit: UsageHit, sourceFile: string, multi: boo
 }
 
 export function parseRockyMountainBills(text: string, sourceFile: string): BillDraft[] {
-  const source = normalizeText(text);
+  const source = normalizeOcrText(normalizeText(text));
   const hits = usageHits(source);
   const identity = parseIdentity(source);
   const multi = hits.length > 1;
@@ -271,7 +358,12 @@ export const rockyMountainParser: BillParser = {
   id: RMP_PARSER_ID,
   match(text: string): boolean {
     const source = normalizeText(text);
-    return /Rocky\s*Mountain\s*Power/i.test(source) || /RockyMountainPower\.net/i.test(source) || /PacifiCorp/i.test(source);
+    return (
+      /Rocky\s*Mountain\s*Power/i.test(source) ||
+      /RockyMountainPower/i.test(source) ||
+      /Rocky\s+M[a-z]+\s+Power/i.test(source) ||
+      /PacifiCorp/i.test(source)
+    );
   },
   parse: parseRockyMountainBills,
 };
