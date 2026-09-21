@@ -1,0 +1,30 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kw-catcher",
+  "main": "src/index.ts",
+  // Recent date: nodejs_compat and nodejs_compat_v2 are enabled by default
+  // (unpdf / pdf.js need them). Do not set no_nodejs_compat.
+  "compatibility_date": "2026-09-21",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kw-catcher",
+      "database_id": "0de9f52d-6073-45d9-b46c-ad7bf0a8c328",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BILLS",
+      "bucket_name": "kw-catcher-bills"
+    }
+  ]
+}

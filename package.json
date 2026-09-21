@@ -1,0 +1,30 @@
+{
+  "name": "kw-catcher",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "check": "wrangler types --check && tsc --noEmit",
+    "test": "vitest run",
+    "types": "wrangler types",
+    "db:migrate:local": "wrangler d1 migrations apply kw-catcher --local",
+    "db:migrate:remote": "wrangler d1 migrations apply kw-catcher --remote",
+    "seed:sql": "node scripts/build-seed.mjs"
+  },
+  "dependencies": {
+    "hono": "^4.13.8",
+    "unpdf": "^1.8.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260921.1",
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.136.1"
+  }
+}
