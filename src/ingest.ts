@@ -1,5 +1,5 @@
 import { deleteOtherR2Bills, ensureMeter, saveBill } from "./db";
-import { extractPdfText } from "./pdf";
+import { extractPdfText, PdfPasswordError } from "./pdf";
 import { emptyBill, type BillStatus } from "./parsers/base";
 import { parseDocument } from "./parsers/registry";
 
@@ -8,15 +8,25 @@ const MAX_BYTES = 20 * 1024 * 1024;
 export interface IngestResult {
   sourceFile: string;
   meterId: string;
-  status: BillStatus | "rejected";
+  status: BillStatus | "rejected" | "needs_password";
   detail: string;
+}
+
+export interface IngestOptions {
+  /** Keep this R2 object. Re-parse reads it and does not write a second copy. */
+  existingR2Key?: string;
+  /**
+   * Unlock password for this PDF. Not stored. The original bytes stay in R2,
+   * so a later re-parse has to be given the password again.
+   */
+  password?: string;
 }
 
 export async function ingestPdf(
   env: Env,
   siteId: string,
   file: File,
-  existingR2Key?: string,
+  options: IngestOptions = {},
 ): Promise<IngestResult[]> {
   const sourceFile = safeFileName(file.name || "bill.pdf");
   if (file.size <= 0) {
@@ -32,6 +42,7 @@ export async function ingestPdf(
   }
 
   const contentHash = await sha256Hex(bytes);
+  const existingR2Key = options.existingR2Key;
   const r2Key =
     existingR2Key ??
     `sites/${siteId}/${new Date().toISOString().slice(0, 7)}/${crypto.randomUUID()}-${sourceFile}`;
@@ -45,20 +56,33 @@ export async function ingestPdf(
 
   let outcome = parseDocument("", sourceFile);
   try {
-    const text = await extractPdfText(bytes);
+    const text = await extractPdfText(bytes, options.password);
     outcome = parseDocument(text, sourceFile);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (existingR2Key) {
-      return [{ sourceFile, meterId: "", status: "failed", detail: `extract failed; kept stored rows (${message})` }];
+    if (error instanceof PdfPasswordError) {
+      if (existingR2Key) {
+        return [{ sourceFile, meterId: "", status: "needs_password", detail: error.message }];
+      }
+      const fields = emptyBill(sourceFile);
+      fields.notes = error.message;
+      fields.parse_confidence = "0.00";
+      outcome = {
+        rows: [{ status: "failed", fields }],
+        textExcerpt: "",
+      };
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      if (existingR2Key) {
+        return [{ sourceFile, meterId: "", status: "failed", detail: `extract failed; kept stored rows (${message})` }];
+      }
+      const fields = emptyBill(sourceFile);
+      fields.notes = `extract:${message}`;
+      fields.parse_confidence = "0.00";
+      outcome = {
+        rows: [{ status: "failed", fields }],
+        textExcerpt: "",
+      };
     }
-    const fields = emptyBill(sourceFile);
-    fields.notes = `extract:${message}`;
-    fields.parse_confidence = "0.00";
-    outcome = {
-      rows: [{ status: "failed", fields }],
-      textExcerpt: "",
-    };
   }
 
   const results: IngestResult[] = [];
@@ -75,18 +99,19 @@ export async function ingestPdf(
       rowIndex: index,
     });
     keptIds.push(saved.id);
+    const status = row.fields.notes.startsWith("needs_password") ? "needs_password" : row.status;
     results.push({
       sourceFile,
       meterId: row.fields.meter_id,
-      status: row.status,
-      detail: `${saved.action} ${row.status}${row.fields.meter_id ? ` meter ${row.fields.meter_id}` : ""}`,
+      status,
+      detail: `${saved.action} ${status}${row.fields.meter_id ? ` meter ${row.fields.meter_id}` : ""}`,
     });
   }
   await deleteOtherR2Bills(env.DB, siteId, r2Key, keptIds);
   return results;
 }
 
-export async function reparseStoredBills(env: Env, siteId: string): Promise<IngestResult[]> {
+export async function reparseStoredBills(env: Env, siteId: string, password?: string): Promise<IngestResult[]> {
   const stored = await env.DB.prepare(
     `SELECT r2_key, MIN(source_file) AS source_file
      FROM bills
@@ -110,7 +135,7 @@ export async function reparseStoredBills(env: Env, siteId: string): Promise<Inge
     }
     const bytes = new Uint8Array(await object.arrayBuffer());
     const file = new File([bytes], bill.source_file || "bill.pdf", { type: "application/pdf" });
-    const parsed = await ingestPdf(env, siteId, file, bill.r2_key);
+    const parsed = await ingestPdf(env, siteId, file, { existingR2Key: bill.r2_key, password });
     results.push(...parsed);
   }
   return results;

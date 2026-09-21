@@ -78,7 +78,7 @@ form {
 
 label { display: grid; gap: 0.25rem; color: var(--muted); font-size: 0.85rem; }
 
-input[type="text"], input[name="name"], input[type="file"] {
+input[type="text"], input[type="password"], input[name="name"], input[type="file"] {
   font: inherit;
   color: var(--ink);
   background: var(--paper);

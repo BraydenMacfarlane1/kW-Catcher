@@ -8,9 +8,10 @@ import {
   type ParseOutcome,
 } from "./base";
 import { nvEnergyParser } from "./nvenergy";
+import { rockyMountainParser } from "./rmp";
 import { sceParser } from "./sce";
 
-const PARSERS: readonly BillParser[] = [sceParser, nvEnergyParser];
+const PARSERS: readonly BillParser[] = [sceParser, nvEnergyParser, rockyMountainParser];
 
 export function parsers(): readonly BillParser[] {
   return PARSERS;

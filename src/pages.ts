@@ -99,12 +99,14 @@ export function renderSite(input: {
       <h2>Upload bills</h2>
       <form method="post" action="/sites/${esc(input.site.id)}/upload" enctype="multipart/form-data">
         <label>PDF files <input type="file" name="pdfs" accept="application/pdf,.pdf" multiple required></label>
+        <label>PDF password <input type="password" name="pdf_password" autocomplete="off" spellcheck="false" placeholder="If the PDF is encrypted"></label>
         <button type="submit">Upload and parse</button>
       </form>
       <form method="post" action="/sites/${esc(input.site.id)}/reparse">
+        <label>PDF password <input type="password" name="pdf_password" autocomplete="off" spellcheck="false" placeholder="Required again for encrypted PDFs"></label>
         <button type="submit">Re-parse stored PDFs</button>
       </form>
-      <p class="hint">A PDF with several meters becomes one row per meter. A combined PDF becomes one row per billing period under that meter, for however many statements it contains (a full year, or longer). Those rows share the stored file. kWh and demand are never added across meters or periods. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank.</p>
+      <p class="hint">A PDF with several meters becomes one row per meter. A combined PDF becomes one row per billing period under that meter, for however many statements it contains (a full year, or longer). Those rows share the stored file. kWh and demand are never added across meters or periods. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank. One password applies to every file in that upload. Leave it blank when the PDF is not encrypted. The stored file stays as uploaded, so re-parse asks for the password again. A missing or wrong password is <code>needs_password</code> and does not fill in bill amounts.</p>
     </section>
     ${sections}`,
   );
@@ -176,7 +178,7 @@ export function renderBanner(notice: string | null, counts: Record<string, strin
   if (notice === "name") return `<p class="banner warn">Enter a site name.</p>`;
   if (notice === "uploaded" || notice === "reparsed") {
     const label = notice === "uploaded" ? "Upload" : "Re-parse";
-    const parts = ["ok", "needs_parser", "failed", "rejected"]
+    const parts = ["ok", "needs_parser", "needs_password", "failed", "rejected"]
       .map((key) => `${counts[key] ?? "0"} ${key}`)
       .join(", ");
     return `<p class="banner">${esc(label)} finished: ${esc(parts)}.</p>`;
