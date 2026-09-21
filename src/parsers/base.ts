@@ -26,6 +26,8 @@ export const BILL_COLUMNS = [
   "demand_kw_super_off_peak",
   "energy_charges_usd",
   "demand_charges_usd",
+  "taxes_usd",
+  "fees_usd",
   "other_charges_usd",
   "total_new_charges_usd",
   "amount_due_usd",
@@ -36,6 +38,7 @@ export const BILL_COLUMNS = [
   "parser_id",
   "parse_confidence",
   "notes",
+  "line_items_json",
 ] as const;
 
 export type BillColumn = (typeof BILL_COLUMNS)[number];
@@ -71,6 +74,7 @@ export interface ParseOutcome {
 export function emptyBill(sourceFile = ""): BillDraft {
   const row = Object.fromEntries(BILL_COLUMNS.map((column) => [column, ""])) as BillDraft;
   row.source_file = sourceFile;
+  row.line_items_json = "[]";
   return row;
 }
 

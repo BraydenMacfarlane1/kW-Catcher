@@ -15,6 +15,18 @@ function expectRow(actual: Record<string, string>, expected: Record<string, stri
   }
 }
 
+function chargeCents(value: string | undefined): number {
+  if (!value) return 0;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : 0;
+}
+
+function chargesReconcile(row: Record<string, string>): boolean {
+  const parts = ["energy_charges_usd", "demand_charges_usd", "taxes_usd", "fees_usd", "other_charges_usd"];
+  const sum = parts.reduce((total, column) => total + chargeCents(row[column]), 0);
+  return Math.abs(sum - chargeCents(row.total_new_charges_usd)) <= 2;
+}
+
 describe("SCE parser", () => {
   it("matches the CSV header", () => {
     expect(Object.keys(csv[0] ?? {})).toEqual([...BILL_COLUMNS]);
@@ -95,6 +107,11 @@ USCA-SCSC-1600-0000
     expect(row.billing_period_end).toBe("2025-11-28");
     expect(row.notes).toContain("winter TOU (no on-peak)");
     expect(row.parse_confidence).toBe("1.00");
+    expect(row.taxes_usd).toBe("");
+    expect(row.fees_usd).toBe("");
+    expect(row.line_items_json).toBe("[]");
+    expect(row.other_charges_usd).toBe("429.11");
+    expect(chargesReconcile(row)).toBe(true);
     expect(parseDocument(text, "bill3.pdf").rows.map((row) => row.status)).toEqual(["ok"]);
   });
 
@@ -163,6 +180,9 @@ USCA-SCSC-1600-0000
     expect(outcome.rows[0]?.fields.kwh_total).toBe("");
     expect(outcome.rows[0]?.fields.amount_due_usd).toBe("");
     expect(outcome.rows[0]?.fields.parser_id).toBe("");
+    expect(outcome.rows[0]?.fields.taxes_usd).toBe("");
+    expect(outcome.rows[0]?.fields.fees_usd).toBe("");
+    expect(outcome.rows[0]?.fields.line_items_json).toBe("[]");
     expect(outcome.textExcerpt).toContain("Pacific Gas and Electric");
   });
 
@@ -249,5 +269,50 @@ USCA-SCSC-1600-0000
     const outcome = parseDocument(text, "two-meters.pdf");
     expect(outcome.rows.map((row) => row.status)).toEqual(["ok", "ok"]);
     expect(sceParser.parse(text, "two-meters.pdf")).toHaveLength(2);
+    expect(rows.every((row) => row.line_items_json === "[]")).toBe(true);
+    expect(rows.every((row) => chargesReconcile(row))).toBe(true);
+  });
+
+  it("reconciles taxes, fees, and residual other charges on the sample SCE bill", () => {
+    const text = readFileSync(new URL("./fixtures/bill0-unpdf.txt", import.meta.url), "utf8");
+    const layout = readFileSync(new URL("./fixtures/bill0-pdftotext.txt", import.meta.url), "utf8");
+    const unpdf = parseSceBill(text, "bill0-original.pdf");
+    const pdftotext = parseSceBill(layout, "bill0-original.pdf");
+    expect(unpdf.line_items_json).toBe(pdftotext.line_items_json);
+    expect(unpdf.taxes_usd).toBe("203.12");
+    expect(unpdf.fees_usd).toBe("323.66");
+    expect(unpdf.other_charges_usd).toBe("0.00");
+    expect(chargesReconcile(unpdf)).toBe(true);
+    expect(chargesReconcile(pdftotext)).toBe(true);
+
+    const items = JSON.parse(unpdf.line_items_json) as { label: string; amount_usd: string; category: string }[];
+    expect(items.find((item) => item.label === "Irwindale UUT")?.category).toBe("tax");
+    expect(items.find((item) => item.label === "State tax")?.category).toBe("tax");
+    expect(items.find((item) => item.label === "Wildfire fund charge")?.category).toBe("fee");
+    expect(items.find((item) => item.label === "Customer charge")?.category).toBe("fee");
+    expect(items.find((item) => item.label === "Fixed recovery charge")?.category).toBe("fee");
+    expect(items.some((item) => /franchise|public purpose|transmission|PCIA/i.test(item.label))).toBe(false);
+
+    const sum = (category: string) =>
+      items
+        .filter((item) => item.category === category)
+        .reduce((total, item) => total + chargeCents(item.amount_usd), 0);
+    expect(sum("tax")).toBe(chargeCents(unpdf.taxes_usd));
+    expect(sum("fee")).toBe(chargeCents(unpdf.fees_usd));
+    expect(sum("energy")).toBe(chargeCents(unpdf.energy_charges_usd));
+    expect(sum("demand")).toBe(chargeCents(unpdf.demand_charges_usd));
+    expect(sum("other")).toBe(0);
+  });
+
+  it("keeps seed rows reconciling when taxes and fees were not extracted", () => {
+    for (const row of csv) {
+      expect(chargesReconcile(row), row.source_file).toBe(true);
+      expect(row.line_items_json === undefined || row.line_items_json === "[]" || row.line_items_json.startsWith("["), row.source_file).toBe(true);
+      if (row.source_file !== "bill0-original.pdf") {
+        expect(row.taxes_usd ?? "", row.source_file).toBe("");
+        expect(row.fees_usd ?? "", row.source_file).toBe("");
+        expect(row.line_items_json ?? "[]", row.source_file).toBe("[]");
+      }
+    }
   });
 });

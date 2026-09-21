@@ -1,4 +1,5 @@
 import { emptyBill, type BillDraft, type BillParser } from "./base";
+import { applyChargeSplit } from "./charges";
 
 export const SCE_PARSER_ID = "sce_tou_gs2_layout_v1";
 
@@ -284,6 +285,8 @@ export function parseSceBill(text: string, sourceFile: string): BillDraft {
       notes.push("total_new_charges from Your new charges");
     }
   }
+
+  applyChargeSplit(row, source);
 
   const required = [
     "customer_account",

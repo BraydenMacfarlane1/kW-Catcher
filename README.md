@@ -47,17 +47,13 @@ npm run dev
 
 Open http://localhost:8787. Migrations create the tables and load the seed site **XU Holdings — Irwindale** (meter `259000-081267`, 12 SCE bills from `seed/xu-holdings-sce-12mo.csv`).
 
-Regenerate the seed migration after editing that CSV:
+Regenerate the seed migrations after editing that CSV:
 
 ```bash
 npm run seed:sql
 ```
 
-Re-apply a changed seed file locally with:
-
-```bash
-npx wrangler d1 execute kw-catcher --local --file=./migrations/0002_seed_xu_holdings.sql
-```
+That writes `migrations/0002_seed_xu_holdings.sql` (the original bill columns, so it still applies on the table from `0001`) and `migrations/0004_charge_components.sql` (`taxes_usd`, `fees_usd`, `line_items_json`, plus the residual `other_charges_usd`). Apply new migrations locally with `npm run db:migrate:local`.
 
 ## Upload, gaps, CSV
 
@@ -65,7 +61,7 @@ npx wrangler d1 execute kw-catcher --local --file=./migrations/0002_seed_xu_hold
 2. Each file is stored in R2, text is extracted with unpdf, and the parser registry runs.
 3. Each meter on a PDF becomes its own bill row. Those rows share one R2 object (`r2_key`) and upsert on `(site_id, meter_id, billing_period_start, billing_period_end)`. kWh and demand are stored per meter and are never added together. A file that does not identify a meter and period upserts on a hash source key.
 4. The site page shows a separate table per `meter_id`. Missing months are computed for that meter only, between its own earliest and latest bill.
-5. If no parser matches, one `needs_parser` row is saved: the PDF and a text excerpt are kept, and bill fields are left blank.
+5. If no parser matches, one `needs_parser` row is saved: the PDF and a text excerpt are kept, and bill fields are left blank (`line_items_json` is `[]`).
 6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the same columns stacked one row per meter, still keyed by `meter_id`, with no total row. Columns are the bill fields plus `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`).
 7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter row).
 
@@ -87,6 +83,8 @@ export interface BillParser {
 
 `src/parsers/sce.ts` (`sce_tou_gs2_layout_v1`) is the Southern California Edison TOU-GS-2-E parser. It handles summer on/mid/off peak and winter mid/off/super-off peak, including transition bills that contain both. A PDF with several `For meter` lines and a Usage block per meter returns one row per meter. It was ported from the one-shot `extract_sce.py` extractor.
 
+When a bill has a **Details of your new charges** section, each charge line is stored in `line_items_json` as `{label, amount_usd, category}` with category `tax`, `fee`, `energy`, `demand`, or `other`. `taxes_usd` sums lines the bill labels as tax (UUT, state tax). `fees_usd` sums fee-like labels (customer charge, franchise fees, wildfire fund, public purpose, fixed recovery, and similar). `other_charges_usd` is the residual, so energy + demand + taxes + fees + other equals `total_new_charges_usd` within rounding. The "your charges include" bullets restate dollars already inside the charge lines, so they stay out of `fees_usd` and `line_items_json`. Bills without that section leave `taxes_usd` and `fees_usd` blank, `line_items_json` as `[]`, and keep the summary other-charges amount, which still reconciles the same way.
+
 ## Tests and build
 
 ```bash
@@ -103,4 +101,6 @@ npm run build
 - `meters` — one utility meter on a site
 - `bills` — one row per meter per billing period (or one row per unmatched file). Several rows may share `r2_key` when they came from the same PDF. Totals are not rolled up across meters.
 
-Bill columns: `utility`, `customer_name`, `customer_account`, `service_account`, `meter_id`, `pod_id`, `service_address`, `service_city`, `service_state`, `service_zip`, `rate_schedule`, `rin`, `billing_period_start`, `billing_period_end`, `billing_days`, `kwh_total`, `kwh_on_peak`, `kwh_mid_peak`, `kwh_off_peak`, `kwh_super_off_peak`, `demand_kw_max`, `demand_kw_on_peak`, `demand_kw_mid_peak`, `demand_kw_off_peak`, `demand_kw_super_off_peak`, `energy_charges_usd`, `demand_charges_usd`, `other_charges_usd`, `total_new_charges_usd`, `amount_due_usd`, `due_date`, `bill_prepared_date`, `service_voltage`, `source_file`, `parser_id`, `parse_confidence`, `notes`.
+Bill columns: `utility`, `customer_name`, `customer_account`, `service_account`, `meter_id`, `pod_id`, `service_address`, `service_city`, `service_state`, `service_zip`, `rate_schedule`, `rin`, `billing_period_start`, `billing_period_end`, `billing_days`, `kwh_total`, `kwh_on_peak`, `kwh_mid_peak`, `kwh_off_peak`, `kwh_super_off_peak`, `demand_kw_max`, `demand_kw_on_peak`, `demand_kw_mid_peak`, `demand_kw_off_peak`, `demand_kw_super_off_peak`, `energy_charges_usd`, `demand_charges_usd`, `taxes_usd`, `fees_usd`, `other_charges_usd`, `total_new_charges_usd`, `amount_due_usd`, `due_date`, `bill_prepared_date`, `service_voltage`, `source_file`, `parser_id`, `parse_confidence`, `notes`, `line_items_json`.
+
+`other_charges_usd` is the residual after energy, demand, taxes, and fees. CSV export uses these columns plus `id`, `site_id`, `r2_key`, `created_at`, and `status`. Grain stays one row per meter per billing period.
