@@ -1,0 +1,32 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "kw-catcher",
+  "main": "src/index.ts",
+  // Recent date: nodejs_compat and nodejs_compat_v2 are enabled by default
+  // (unpdf / pdf.js need them). Do not set no_nodejs_compat.
+  "compatibility_date": "2026-09-21",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kw-catcher",
+      // Replace database_id after `npx wrangler d1 create kw-catcher`.
+      // Local dev works with this placeholder; remote deploy does not.
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BILLS",
+      "bucket_name": "kw-catcher-bills"
+    }
+  ]
+}
