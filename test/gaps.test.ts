@@ -23,6 +23,17 @@ describe("gap detection", () => {
     expect(missingMonths(periods)).toEqual(["2026-02"]);
   });
 
+  it("does not let one meter fill another meter's gap", () => {
+    const meterA = [
+      { billing_period_start: "2026-01-01", billing_period_end: "2026-01-31" },
+      { billing_period_start: "2026-03-01", billing_period_end: "2026-03-31" },
+    ];
+    const meterB = [{ billing_period_start: "2026-02-01", billing_period_end: "2026-02-28" }];
+    expect(missingMonths(meterA)).toEqual(["2026-02"]);
+    expect(missingMonths(meterB)).toEqual([]);
+    expect(missingMonths([...meterA, ...meterB])).toEqual([]);
+  });
+
   it("inserts a gap row between dated bills", () => {
     const rows = timelineRows([
       { id: "a", billing_period_start: "2026-01-01", billing_period_end: "2026-01-31" },

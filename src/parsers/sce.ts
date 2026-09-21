@@ -356,6 +356,68 @@ export function parseSceBill(text: string, sourceFile: string): BillDraft {
   return row;
 }
 
+function meterIdsIn(text: string): string[] {
+  return [
+    ...new Set(
+      [...text.matchAll(/For meter\s+(\S+)/gi)].map((match) => match[1] ?? "").filter((id) => id !== ""),
+    ),
+  ];
+}
+
+function appendNote(notes: string, extra: string): string {
+  return notes ? `${notes}; ${extra}` : extra;
+}
+
+/** Split a bill that repeats one Usage block per meter. Returns null when the layout is a single meter. */
+function splitMeterSections(text: string, meterIds: string[]): string[] | null {
+  if (meterIds.length <= 1) return null;
+  const starts = [...text.matchAll(/Usage\s+Avg\.\s+cost\s+Total cost/g)].map((match) => match.index ?? 0);
+  if (starts.length < meterIds.length) return null;
+  const header = text.slice(0, starts[0] ?? 0);
+  return meterIds.map((_, index) => {
+    const start = starts[index] ?? 0;
+    const end = starts[index + 1] ?? text.length;
+    return header + text.slice(start, end);
+  });
+}
+
+export function parseSceBills(text: string, sourceFile: string): BillDraft[] {
+  const source = normalizeText(text);
+  const meterIds = meterIdsIn(source);
+  const sections = splitMeterSections(source, meterIds);
+  if (sections) {
+    return sections.map((section) => {
+      const row = parseSceBill(section, sourceFile);
+      row.notes = appendNote(row.notes, "multi-meter bill; row is this meter only");
+      return row;
+    });
+  }
+
+  const row = parseSceBill(source, sourceFile);
+  if (meterIds.length <= 1) return [row];
+
+  return meterIds.map((meterId, index) => {
+    if (index === 0) {
+      const first = { ...row, meter_id: meterId };
+      first.notes = appendNote(first.notes, "multi-meter bill; row is this meter only");
+      return first;
+    }
+    const extra = emptyBill(sourceFile);
+    extra.utility = row.utility;
+    extra.customer_name = row.customer_name;
+    extra.customer_account = row.customer_account;
+    extra.service_account = row.service_account;
+    extra.meter_id = meterId;
+    extra.parser_id = row.parser_id;
+    extra.billing_period_start = row.billing_period_start;
+    extra.billing_period_end = row.billing_period_end;
+    extra.billing_days = row.billing_days;
+    extra.parse_confidence = "0.25";
+    extra.notes = "multi-meter bill; usage block not separated for this meter";
+    return extra;
+  });
+}
+
 export const sceParser: BillParser = {
   id: SCE_PARSER_ID,
   match(text: string): boolean {
@@ -363,5 +425,5 @@ export const sceParser: BillParser = {
     const brand = /Southern California Edison/i.test(source) || /www\.sce\.com/i.test(source);
     return brand && /Customer account/i.test(source) && /Billing period:/i.test(source);
   },
-  parse: parseSceBill,
+  parse: parseSceBills,
 };

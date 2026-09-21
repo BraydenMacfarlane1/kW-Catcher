@@ -54,12 +54,17 @@ export type BillStatus = "ok" | "needs_parser" | "failed";
 export interface BillParser {
   id: string;
   match(text: string): boolean;
-  parse(text: string, sourceFile: string): BillDraft;
+  /** One row per meter. Do not combine kWh or demand across meters. */
+  parse(text: string, sourceFile: string): BillDraft[];
+}
+
+export interface ParsedRow {
+  status: BillStatus;
+  fields: BillDraft;
 }
 
 export interface ParseOutcome {
-  status: BillStatus;
-  fields: BillDraft;
+  rows: ParsedRow[];
   textExcerpt: string;
 }
 

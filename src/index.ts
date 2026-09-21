@@ -82,10 +82,10 @@ app.post("/sites/:id/upload", async (c) => {
   const files = form.getAll("pdfs").filter((entry): entry is File => entry instanceof File && entry.size > 0);
   const results: IngestResult[] = [];
   for (const file of files.slice(0, 25)) {
-    results.push(await ingestPdf(c.env, id, file));
+    results.push(...(await ingestPdf(c.env, id, file)));
   }
   for (const file of files.slice(25)) {
-    results.push({ sourceFile: file.name || "bill.pdf", status: "rejected", detail: "limit 25 files" });
+    results.push({ sourceFile: file.name || "bill.pdf", meterId: "", status: "rejected", detail: "limit 25 files" });
   }
   return c.redirect(resultLocation(id, "uploaded", results), 303);
 });
@@ -105,21 +105,20 @@ app.get("/sites/:id/export.csv", async (c) => {
   const site = await getSite(c.env.DB, id);
   if (!site) return c.notFound();
   const bills = await listBills(c.env.DB, id);
-  const columns = [...BILL_COLUMNS, "id", "site_id", "r2_key", "created_at", "status"];
-  const csv = toCsv(
-    columns,
-    bills.map((bill) => ({
-      ...bill,
-      r2_key: bill.r2_key ?? "",
-    })),
-  );
-  const filename = `${site.name.replace(/[^A-Za-z0-9._-]+/g, "_")}.csv`;
-  return new Response(csv, {
-    headers: {
-      "content-type": "text/csv; charset=utf-8",
-      "content-disposition": `attachment; filename="${filename}"`,
-    },
-  });
+  const filename = `${fileSlug(site.name)}_all-meters.csv`;
+  return csvResponse(bills, filename);
+});
+
+app.get("/sites/:id/meters/:meterId/export.csv", async (c) => {
+  const id = c.req.param("id");
+  const meterId = c.req.param("meterId");
+  if (!isId(id) || !isMeterId(meterId)) return c.notFound();
+  const site = await getSite(c.env.DB, id);
+  if (!site) return c.notFound();
+  const bills = await listBills(c.env.DB, id, meterId);
+  if (bills.length === 0) return c.notFound();
+  const filename = `${fileSlug(site.name)}_${fileSlug(meterId)}.csv`;
+  return csvResponse(bills, filename);
 });
 
 app.notFound((c) => c.html(page("Not found", "<h1>Not found</h1><p><a href=\"/\">Back to sites</a></p>"), 404));
@@ -128,6 +127,31 @@ export default app;
 
 function isId(id: string): boolean {
   return /^[A-Za-z0-9_-]{1,80}$/.test(id);
+}
+
+function isMeterId(meterId: string): boolean {
+  return /^[A-Za-z0-9_.-]{1,80}$/.test(meterId);
+}
+
+function fileSlug(value: string): string {
+  return value.replace(/[^A-Za-z0-9._-]+/g, "_") || "export";
+}
+
+function csvResponse(bills: Awaited<ReturnType<typeof listBills>>, filename: string): Response {
+  const columns = [...BILL_COLUMNS, "id", "site_id", "r2_key", "created_at", "status"];
+  const csv = toCsv(
+    columns,
+    bills.map((bill) => ({
+      ...bill,
+      r2_key: bill.r2_key ?? "",
+    })),
+  );
+  return new Response(csv, {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`,
+    },
+  });
 }
 
 function isMissingTable(error: unknown): boolean {

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { parseCsv } from "../src/csv";
 import { BILL_COLUMNS } from "../src/parsers/base";
 import { parseDocument } from "../src/parsers/registry";
-import { parseSceBill, sceParser } from "../src/parsers/sce";
+import { parseSceBill, parseSceBills, sceParser } from "../src/parsers/sce";
 import { extractPdfText } from "../src/pdf";
 
 const csv = parseCsv(readFileSync(new URL("../seed/xu-holdings-sce-12mo.csv", import.meta.url), "utf8"));
@@ -38,8 +38,9 @@ describe("SCE parser", () => {
     const bytes = new Uint8Array(readFileSync(new URL("./fixtures/bill0-original.pdf", import.meta.url)));
     const text = await extractPdfText(bytes);
     const outcome = parseDocument(text, "bill0-original.pdf");
-    expect(outcome.status).toBe("ok");
-    expectRow(outcome.fields, summer ?? {});
+    expect(outcome.rows).toHaveLength(1);
+    expect(outcome.rows[0]?.status).toBe("ok");
+    expectRow(outcome.rows[0]?.fields ?? {}, summer ?? {});
   });
 
   it("parses a winter TOU bill with super-off before off peak", () => {
@@ -94,7 +95,7 @@ USCA-SCSC-1600-0000
     expect(row.billing_period_end).toBe("2025-11-28");
     expect(row.notes).toContain("winter TOU (no on-peak)");
     expect(row.parse_confidence).toBe("1.00");
-    expect(parseDocument(text, "bill3.pdf").status).toBe("ok");
+    expect(parseDocument(text, "bill3.pdf").rows.map((row) => row.status)).toEqual(["ok"]);
   });
 
   it("parses a summer/winter transition and keeps the max demand in each period", () => {
@@ -155,12 +156,13 @@ USCA-SCSC-1600-0000
   it("does not invent fields when no parser matches", () => {
     const text = "Pacific Gas and Electric\nCustomer account\n1234567890\nAmount due $10.00\n";
     const outcome = parseDocument(text, "pge.pdf");
-    expect(outcome.status).toBe("needs_parser");
-    expect(outcome.fields.utility).toBe("");
-    expect(outcome.fields.customer_account).toBe("");
-    expect(outcome.fields.kwh_total).toBe("");
-    expect(outcome.fields.amount_due_usd).toBe("");
-    expect(outcome.fields.parser_id).toBe("");
+    expect(outcome.rows).toHaveLength(1);
+    expect(outcome.rows[0]?.status).toBe("needs_parser");
+    expect(outcome.rows[0]?.fields.utility).toBe("");
+    expect(outcome.rows[0]?.fields.customer_account).toBe("");
+    expect(outcome.rows[0]?.fields.kwh_total).toBe("");
+    expect(outcome.rows[0]?.fields.amount_due_usd).toBe("");
+    expect(outcome.rows[0]?.fields.parser_id).toBe("");
     expect(outcome.textExcerpt).toContain("Pacific Gas and Electric");
   });
 
@@ -168,8 +170,84 @@ USCA-SCSC-1600-0000
     const text = "Southern California Edison\nwww.sce.com\nCustomer account\nBilling period: not a date\n";
     const outcome = parseDocument(text, "broken.pdf");
     expect(sceParser.match(text)).toBe(true);
-    expect(outcome.status).toBe("failed");
-    expect(outcome.fields.utility).toBe("SCE");
-    expect(outcome.fields.notes).toContain("MISSING_REQUIRED:");
+    expect(outcome.rows).toHaveLength(1);
+    expect(outcome.rows[0]?.status).toBe("failed");
+    expect(outcome.rows[0]?.fields.utility).toBe("SCE");
+    expect(outcome.rows[0]?.fields.notes).toContain("MISSING_REQUIRED:");
+  });
+
+  it("returns one row per meter and does not add their kWh or demand", () => {
+    const text = `XU HOLDINGS, LLC / Page 1 of 6
+Customer account
+700332402169
+Southern California Edison
+www.sce.com
+Usage Avg. cost Total cost
+On peak 100 kWh x $0.10 = $10.00
+Mid peak 20 kWh x $0.10 = $2.00
+Off peak 80 kWh x $0.10 = $8.00
+200 kWh $50.00 Energy Charges
+$10.00 Demand Charges
+$5.00 Other credits/charges
+$65.00 Total
+Summer season demand (kW)
+Your maximum demand reached this billing period is 10 kW Maximum Summer demand reached by price period :
+On peak 10 kW 08/01/26 04:15pm-04:30pm
+Mid peak 2 kW 08/02/26 08:15pm-08:30pm
+Off peak 8 kW 08/03/26 03:45pm-04:00pm
+To view your demand charges.
+Service account
+8000000001
+10 FIRST ST
+IRWINDALE, CA 91706
+For meter METER-A from 07/01/26 to 07/31/26
+Total electricity you used this month in kWh 200
+Your rate: TOU-GS-2-E
+Billing period: 07/01/26 to 07/31/26 (31 days)
+Amount due $65.00
+Due by 08/20/26
+Date bill prepared
+08/01/26
+Service voltage: 480 volts
+USCA-SCSC-1600-0000
+Usage Avg. cost Total cost
+On peak 300 kWh x $0.10 = $30.00
+Mid peak 40 kWh x $0.10 = $4.00
+Off peak 160 kWh x $0.10 = $16.00
+500 kWh $90.00 Energy Charges
+$20.00 Demand Charges
+$6.00 Other credits/charges
+$116.00 Total
+Summer season demand (kW)
+Your maximum demand reached this billing period is 22 kW Maximum Summer demand reached by price period :
+On peak 22 kW 08/01/26 04:15pm-04:30pm
+Mid peak 4 kW 08/02/26 08:15pm-08:30pm
+Off peak 11 kW 08/03/26 03:45pm-04:00pm
+To view your demand charges.
+Service account
+8000000002
+20 SECOND ST
+IRWINDALE, CA 91706
+For meter METER-B from 07/01/26 to 07/31/26
+Total electricity you used this month in kWh 500
+Your rate: TOU-GS-2-E
+Billing period: 07/01/26 to 07/31/26 (31 days)
+Amount due $116.00
+Due by 08/20/26
+Date bill prepared
+08/01/26
+Service voltage: 208 volts
+USCA-SCSC-1600-0000
+`;
+    const rows = parseSceBills(text, "two-meters.pdf");
+    expect(rows.map((row) => row.meter_id)).toEqual(["METER-A", "METER-B"]);
+    expect(rows.map((row) => row.kwh_total)).toEqual(["200", "500"]);
+    expect(rows.map((row) => row.demand_kw_max)).toEqual(["10", "22"]);
+    expect(rows.map((row) => row.amount_due_usd)).toEqual(["65.00", "116.00"]);
+    expect(rows.some((row) => row.kwh_total === "700")).toBe(false);
+    expect(rows.some((row) => row.demand_kw_max === "32")).toBe(false);
+    const outcome = parseDocument(text, "two-meters.pdf");
+    expect(outcome.rows.map((row) => row.status)).toEqual(["ok", "ok"]);
+    expect(sceParser.parse(text, "two-meters.pdf")).toHaveLength(2);
   });
 });

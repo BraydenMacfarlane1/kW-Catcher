@@ -33,11 +33,11 @@ export interface BillRow extends BillDraft {
   text_excerpt: string;
 }
 
-export function sourceKeyFor(siteId: string, fields: BillDraft, contentHash: string): string {
+export function sourceKeyFor(siteId: string, fields: BillDraft, contentHash: string, index = 0): string {
   if (fields.meter_id && fields.billing_period_start && fields.billing_period_end) {
     return `${siteId}|${fields.meter_id}|${fields.billing_period_start}|${fields.billing_period_end}`;
   }
-  return `${siteId}|file|${contentHash}`;
+  return index === 0 ? `${siteId}|file|${contentHash}` : `${siteId}|file|${contentHash}|${index}`;
 }
 
 export async function listSites(db: D1Database): Promise<SiteRow[]> {
@@ -70,11 +70,17 @@ export async function listMeters(db: D1Database, siteId: string): Promise<MeterR
   return result.results;
 }
 
-export async function listBills(db: D1Database, siteId: string): Promise<BillRow[]> {
-  const result = await db
-    .prepare("SELECT * FROM bills WHERE site_id = ? ORDER BY meter_id, billing_period_start, source_file")
-    .bind(siteId)
-    .all<BillRow>();
+export async function listBills(db: D1Database, siteId: string, meterId?: string): Promise<BillRow[]> {
+  const statement = meterId
+    ? db
+        .prepare(
+          "SELECT * FROM bills WHERE site_id = ? AND meter_id = ? ORDER BY billing_period_start, source_file",
+        )
+        .bind(siteId, meterId)
+    : db
+        .prepare("SELECT * FROM bills WHERE site_id = ? ORDER BY meter_id, billing_period_start, source_file")
+        .bind(siteId);
+  const result = await statement.all<BillRow>();
   return result.results;
 }
 
@@ -139,10 +145,11 @@ export async function saveBill(
     r2Key: string | null;
     contentHash: string;
     textExcerpt: string;
+    rowIndex?: number;
     existingId?: string;
   },
-): Promise<"inserted" | "updated"> {
-  const sourceKey = sourceKeyFor(input.siteId, input.fields, input.contentHash);
+): Promise<{ id: string; action: "inserted" | "updated" }> {
+  const sourceKey = sourceKeyFor(input.siteId, input.fields, input.contentHash, input.rowIndex ?? 0);
   const now = new Date().toISOString();
   const byKey = await db
     .prepare("SELECT id FROM bills WHERE source_key = ?")
@@ -155,14 +162,14 @@ export async function saveBill(
   if (byKey && existing && byKey.id !== existing.id) {
     await updateBill(db, byKey.id, input, sourceKey, now, input.r2Key ?? existing.r2_key);
     await db.prepare("DELETE FROM bills WHERE id = ?").bind(existing.id).run();
-    return "updated";
+    return { id: byKey.id, action: "updated" };
   }
 
   const targetId = byKey?.id ?? existing?.id;
   if (targetId) {
     const keptR2 = input.r2Key ?? existing?.r2_key ?? null;
     await updateBill(db, targetId, input, sourceKey, now, keptR2);
-    return "updated";
+    return { id: targetId, action: "updated" };
   }
 
   const id = crypto.randomUUID();
@@ -192,7 +199,24 @@ export async function saveBill(
     .prepare(`INSERT INTO bills (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`)
     .bind(...values)
     .run();
-  return "inserted";
+  return { id, action: "inserted" };
+}
+
+export async function deleteOtherR2Bills(
+  db: D1Database,
+  siteId: string,
+  r2Key: string,
+  keepIds: readonly string[],
+): Promise<void> {
+  const existing = await db
+    .prepare("SELECT id FROM bills WHERE site_id = ? AND r2_key = ?")
+    .bind(siteId, r2Key)
+    .all<{ id: string }>();
+  for (const row of existing.results) {
+    if (!keepIds.includes(row.id)) {
+      await db.prepare("DELETE FROM bills WHERE id = ?").bind(row.id).run();
+    }
+  }
 }
 
 async function updateBill(

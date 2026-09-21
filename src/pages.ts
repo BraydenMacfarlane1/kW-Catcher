@@ -83,8 +83,9 @@ export function renderSite(input: {
   const sections = groups.size === 0
     ? `<section><p>No bills yet.</p></section>`
     : [...groups.entries()]
-    .map(([meterId, bills]) => renderMeter(meterId, metersByNumber.get(meterId), bills))
-    .join("");
+        .sort((a, b) => compareMeterIds(a[0], b[0]))
+        .map(([meterId, bills]) => renderMeter(input.site.id, meterId, metersByNumber.get(meterId), bills))
+        .join("");
 
   return page(
     input.site.name,
@@ -92,7 +93,7 @@ export function renderSite(input: {
     <p class="crumb"><a href="/">Sites</a> / ${esc(input.site.name)}</p>
     <div class="title-row">
       <h1>${esc(input.site.name)}</h1>
-      <a class="button" href="/sites/${esc(input.site.id)}/export.csv">Download CSV</a>
+      <a class="button" href="/sites/${esc(input.site.id)}/export.csv">All meters CSV</a>
     </div>
     <section class="upload">
       <h2>Upload bills</h2>
@@ -103,14 +104,23 @@ export function renderSite(input: {
       <form method="post" action="/sites/${esc(input.site.id)}/reparse">
         <button type="submit">Re-parse stored PDFs</button>
       </form>
-      <p class="hint">Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank.</p>
+      <p class="hint">A PDF with several meters becomes one row per meter, sharing the stored file. kWh and demand are never added together. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank.</p>
     </section>
     ${sections}`,
   );
 }
 
-function renderMeter(meterId: string, meter: MeterRow | undefined, bills: BillRow[]): string {
+function compareMeterIds(a: string, b: string): number {
+  if (!a) return 1;
+  if (!b) return -1;
+  return a.localeCompare(b);
+}
+
+function renderMeter(siteId: string, meterId: string, meter: MeterRow | undefined, bills: BillRow[]): string {
   const title = meterId ? `Meter ${meterId}` : "No meter id";
+  const download = meterId
+    ? `<a href="/sites/${esc(siteId)}/meters/${encodeURIComponent(meterId)}/export.csv">Download this meter</a>`
+    : "";
   const address = meter
     ? [meter.service_address, meter.service_city, meter.service_state, meter.service_zip].filter(Boolean).join(", ")
     : "";
@@ -123,7 +133,10 @@ function renderMeter(meterId: string, meter: MeterRow | undefined, bills: BillRo
     : "";
 
   return `<section>
-    <h2>${esc(title)}</h2>
+    <div class="title-row">
+      <h2>${esc(title)}</h2>
+      ${download}
+    </div>
     ${address ? `<p class="meta">${esc(address)}${meter?.utility ? ` · ${esc(meter.utility)}` : ""}</p>` : ""}
     ${gapNote}
     <div class="table-wrap">

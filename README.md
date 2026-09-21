@@ -63,11 +63,11 @@ npx wrangler d1 execute kw-catcher --local --file=./migrations/0002_seed_xu_hold
 
 1. Open a site and upload one or more PDFs.
 2. Each file is stored in R2, text is extracted with unpdf, and the parser registry runs.
-3. A matched bill is upserted on `(site_id, meter_id, billing_period_start, billing_period_end)`. Files that do not identify a meter and period upsert on a hash source key.
-4. Months between a meter's earliest and latest bill that no bill covers show up as highlighted gap rows.
-5. If no parser matches, the row is `needs_parser`: the PDF and a text excerpt are kept, and bill fields are left blank.
-6. **Download CSV** on the site page, or `GET /sites/:id/export.csv`. Columns are the bill fields plus `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`).
-7. **Re-parse stored PDFs** runs the registry again against objects already in R2 (use this after adding a parser).
+3. Each meter on a PDF becomes its own bill row. Those rows share one R2 object (`r2_key`) and upsert on `(site_id, meter_id, billing_period_start, billing_period_end)`. kWh and demand are stored per meter and are never added together. A file that does not identify a meter and period upserts on a hash source key.
+4. The site page shows a separate table per `meter_id`. Missing months are computed for that meter only, between its own earliest and latest bill.
+5. If no parser matches, one `needs_parser` row is saved: the PDF and a text excerpt are kept, and bill fields are left blank.
+6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the same columns stacked one row per meter, still keyed by `meter_id`, with no total row. Columns are the bill fields plus `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`).
+7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter row).
 
 ## Add a parser
 
@@ -77,15 +77,15 @@ Parsers live in `src/parsers/`. Each one implements `BillParser` from `src/parse
 export interface BillParser {
   id: string;
   match(text: string): boolean;
-  parse(text: string, sourceFile: string): BillDraft;
+  parse(text: string, sourceFile: string): BillDraft[];
 }
 ```
 
-1. Add `src/parsers/<utility>.ts`. `match` should be strict. `parse` should only fill fields it actually found.
+1. Add `src/parsers/<utility>.ts`. `match` should be strict. `parse` returns one `BillDraft` per meter and only fills fields it actually found. Do not sum meters into one row.
 2. Register it in the `PARSERS` array in `src/parsers/registry.ts`. The first match wins.
 3. Add a fixture under `test/fixtures/` and a Vitest case. Do not guess amounts for an unknown layout; return what you can and let missing required fields mark the row `failed`.
 
-`src/parsers/sce.ts` (`sce_tou_gs2_layout_v1`) is the Southern California Edison TOU-GS-2-E parser. It handles summer on/mid/off peak and winter mid/off/super-off peak, including transition bills that contain both. It was ported from the one-shot `extract_sce.py` extractor.
+`src/parsers/sce.ts` (`sce_tou_gs2_layout_v1`) is the Southern California Edison TOU-GS-2-E parser. It handles summer on/mid/off peak and winter mid/off/super-off peak, including transition bills that contain both. A PDF with several `For meter` lines and a Usage block per meter returns one row per meter. It was ported from the one-shot `extract_sce.py` extractor.
 
 ## Tests and build
 
@@ -101,6 +101,6 @@ npm run build
 
 - `sites` — a location
 - `meters` — one utility meter on a site
-- `bills` — one row per billing period (or per unmatched file), kept permanently
+- `bills` — one row per meter per billing period (or one row per unmatched file). Several rows may share `r2_key` when they came from the same PDF. Totals are not rolled up across meters.
 
 Bill columns: `utility`, `customer_name`, `customer_account`, `service_account`, `meter_id`, `pod_id`, `service_address`, `service_city`, `service_state`, `service_zip`, `rate_schedule`, `rin`, `billing_period_start`, `billing_period_end`, `billing_days`, `kwh_total`, `kwh_on_peak`, `kwh_mid_peak`, `kwh_off_peak`, `kwh_super_off_peak`, `demand_kw_max`, `demand_kw_on_peak`, `demand_kw_mid_peak`, `demand_kw_off_peak`, `demand_kw_super_off_peak`, `energy_charges_usd`, `demand_charges_usd`, `other_charges_usd`, `total_new_charges_usd`, `amount_due_usd`, `due_date`, `bill_prepared_date`, `service_voltage`, `source_file`, `parser_id`, `parse_confidence`, `notes`.
