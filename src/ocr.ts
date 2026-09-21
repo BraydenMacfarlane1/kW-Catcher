@@ -229,8 +229,12 @@ async function loadTraineddata(): Promise<Uint8Array> {
 async function loadBytes(specifier: string, url: string): Promise<ArrayBuffer> {
   const resolved = resolvePackageFile(specifier);
   if (resolved) {
-    const bytes = await readFile(resolved);
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    try {
+      const bytes = await readFile(resolved);
+      if (bytes.byteLength > 0) return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    } catch {
+      /* Workers cannot read node_modules. Fetch the same file below. */
+    }
   }
   const response = await fetch(url);
   if (!response.ok) throw new Error(`fetch ${url} failed: ${response.status}`);
