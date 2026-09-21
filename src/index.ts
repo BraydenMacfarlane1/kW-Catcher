@@ -96,8 +96,7 @@ app.post("/sites/:id/reparse", async (c) => {
   if (!isId(id)) return c.notFound();
   const site = await getSite(c.env.DB, id);
   if (!site) return c.notFound();
-  const form = await c.req.formData();
-  const results = await reparseStoredBills(c.env, id, formPassword(form));
+  const results = await reparseStoredBills(c.env, id, await optionalFormPassword(c.req.raw));
   return c.redirect(resultLocation(id, "reparsed", results), 303);
 });
 
@@ -167,6 +166,12 @@ function formPassword(form: FormData): string | undefined {
   if (typeof value !== "string") return undefined;
   const password = value.trim();
   return password || undefined;
+}
+
+async function optionalFormPassword(request: Request): Promise<string | undefined> {
+  const type = request.headers.get("content-type") ?? "";
+  if (!type.includes("application/x-www-form-urlencoded") && !type.includes("multipart/form-data")) return undefined;
+  return formPassword(await request.formData());
 }
 
 function queryCounts(c: { req: { query: (name: string) => string | undefined } }): Record<string, string> {

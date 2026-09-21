@@ -61,6 +61,11 @@ export async function ingestPdf(
   } catch (error) {
     if (error instanceof PdfPasswordError) {
       if (existingR2Key) {
+        await env.DB.prepare(
+          `UPDATE bills SET notes = ?, updated_at = ? WHERE site_id = ? AND r2_key = ? AND status <> 'ok'`,
+        )
+          .bind(error.message, new Date().toISOString(), siteId, existingR2Key)
+          .run();
         return [{ sourceFile, meterId: "", status: "needs_password", detail: error.message }];
       }
       const fields = emptyBill(sourceFile);
