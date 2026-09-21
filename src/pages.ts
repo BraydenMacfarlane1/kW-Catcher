@@ -104,7 +104,7 @@ export function renderSite(input: {
       <form method="post" action="/sites/${esc(input.site.id)}/reparse">
         <button type="submit">Re-parse stored PDFs</button>
       </form>
-      <p class="hint">A PDF with several meters becomes one row per meter. A combined PDF with several billing periods becomes one row per period under that meter. Those rows share the stored file. kWh and demand are never added across meters or periods. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank.</p>
+      <p class="hint">A PDF with several meters becomes one row per meter. A combined PDF becomes one row per billing period under that meter, for however many statements it contains (a full year, or longer). Those rows share the stored file. kWh and demand are never added across meters or periods. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank.</p>
     </section>
     ${sections}`,
   );

@@ -186,6 +186,35 @@ describe("NV Energy parser", () => {
     expect(parseDocument(page1, "page1.pdf").rows.map((row) => row.status)).toEqual(["ok"]);
   });
 
+  it("returns one row per concatenated statement instead of a fixed length", () => {
+    const statements = layout
+      .split(/(?=PAGE\s+1\s+OF\s+\d+)/i)
+      .map((part) => part.trim())
+      .filter((part) => /KWH\s+\d{1,2}\/\d{1,2}\/\d{2,4}\s+to\s+/i.test(part));
+    expect(statements).toHaveLength(11);
+
+    for (const count of [2, 3]) {
+      const text = statements.slice(0, count).join("\n\n");
+      const rows = parseNvEnergyBills(text, `${count}-statements.pdf`);
+      expect(rows, `${count} statements`).toHaveLength(count);
+      expect(new Set(rows.map((row) => `${row.billing_period_start}|${row.billing_period_end}`)).size).toBe(count);
+      const outcome = parseDocument(text, `${count}-statements.pdf`);
+      expect(outcome.rows).toHaveLength(count);
+      expect(outcome.rows.every((row) => row.status === "ok")).toBe(true);
+    }
+
+    const year = Array.from({ length: 12 }, (_, index) => {
+      const month = String(index + 1).padStart(2, "0");
+      return (statements[0] ?? "").replace(
+        /KWH\s+\d{1,2}\/\d{1,2}\/\d{2,4}\s+to\s+\d{1,2}\/\d{1,2}\/\d{2,4}/,
+        `KWH ${month}/01/25 to ${month}/28/25`,
+      );
+    }).join("\n\n");
+    const yearRows = parseNvEnergyBills(year, "twelve-statements.pdf");
+    expect(yearRows).toHaveLength(12);
+    expect(new Set(yearRows.map((row) => row.billing_period_start)).size).toBe(12);
+  });
+
   it("keeps two billing periods separate when they share one meter", () => {
     const text = `NV Energy
 BUMBLE OFFICE LLC
