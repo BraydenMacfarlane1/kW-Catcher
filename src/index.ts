@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { mountReadApi } from "./api";
+import { mountApi } from "./api";
 import {
   createSite,
   getSite,
@@ -23,7 +23,7 @@ app.onError((error, c) => {
   return c.html(page("Error", "<h1>Something went wrong.</h1><p><a href=\"/\">Back to sites</a></p>"), 500);
 });
 
-mountReadApi(app);
+mountApi(app);
 
 app.get("/api/health", (c) => c.json({ ok: true }));
 

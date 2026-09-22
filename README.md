@@ -65,37 +65,69 @@ That writes `migrations/0002_seed_xu_holdings.sql` (the original bill columns, s
 6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the Sun Daddy ingest contract v1 columns, one row per meter, with no total row. `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`) are appended after the contract columns. The HTML pages and these two URLs stay unauthenticated.
 7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter or period row).
 
-## Read API
+## HTTP API
 
-Sun Daddy pulls the same rows over JSON and CSV. Worker name in `wrangler.jsonc` is `kw-catcher`, which deploys to `https://kw-catcher.braydenm.workers.dev` (no custom domain in config). Column names are Sun Daddy ingest contract v1. JSON values are strings, the same cells as the CSV.
+Sun Daddy creates sites, uploads bill PDFs, and pulls the same rows over JSON and CSV. Worker name in `wrangler.jsonc` is `kw-catcher`, which deploys to `https://kw-catcher.braydenm.workers.dev` (no custom domain in config). Column names are Sun Daddy ingest contract v1. JSON values are strings, the same cells as the CSV.
 
-`GET /api/health` stays public. Every `/api/v1/*` route requires the Worker secret `API_TOKEN`. Send `Authorization: Bearer <token>` or `X-API-Token: <token>`. A missing secret, missing token, or wrong token is `401` with `{ "error": "unauthorized" }`. The token is not in the repo.
+`GET /api/health` stays public. Every `/api/v1/*` route requires the Worker secret `API_TOKEN`. Send `Authorization: Bearer <token>` or `X-API-Token: <token>`. A missing secret, missing token, or wrong token is `401` with `{ "error": "unauthorized" }`. The token is not in the repo. The HTML pages and `POST /sites` / `POST /sites/:id/upload` stay unauthenticated.
 
 | Method | Path | Auth | Body |
 | --- | --- | --- | --- |
 | `GET` | `/api/health` | public | `{ "ok": true }` |
-| `GET` | `/api/v1/sites` | token | JSON array of sites, each with nested `meters` (`id`, `name`, `meter_id`, and the other meter columns already in D1) |
+| `GET` | `/api/v1/sites` | token | JSON array of sites, each with nested `meters` |
+| `POST` | `/api/v1/sites` | token | Create a site. JSON body. `201` `{ id, name, created_at, utility, address, city, state, zip, notes, customer_name, meters: [] }` |
+| `GET` | `/api/v1/sites/:siteId` | token | One site, `meters`, and `bill_counts` |
+| `POST` | `/api/v1/sites/:siteId/bills` | token | `multipart/form-data` PDF upload. JSON results, not a redirect |
 | `GET` | `/api/v1/sites/:siteId/export.csv` | token | All meters on the site. Same file as the UI all-meters CSV |
 | `GET` | `/api/v1/sites/:siteId/export.json` | token | JSON array of those rows |
 | `GET` | `/api/v1/sites/:siteId/meters/:meterId/export.csv` | token | One meter. Same file as **Download this meter** |
 | `GET` | `/api/v1/sites/:siteId/meters/:meterId/export.json` | token | JSON array of that meter's rows |
 | `OPTIONS` | `/api/v1/*` and `/api/health` | public | CORS preflight. No token |
 
-A meter export with no rows is `404` `{ "error": "not_found" }`, matching the UI. A site export with no rows is `200` and an empty CSV (header only) or `[]`.
+A meter export with no rows is `404` `{ "error": "not_found" }`, matching the UI. A site export with no rows is `200` and an empty CSV (header only) or `[]`. An unknown site id on the write routes is the same `404`.
+
+### Create a site and upload bills
+
+`POST /api/v1/sites` reads a JSON object. `name` is required (trimmed, 1–200 characters). Optional strings: `utility`, `address`, `city`, `state`, `zip`, `notes`, `customer_name`. Unknown fields are ignored. Those optional fields are stored on `sites` by `migrations/0005_site_profile.sql` and returned on list, create, and get. Existing rows stay blank. A duplicate name is `409` `{ "error": "name_taken" }`. A missing or too-long name, a non-string profile field, or a non-JSON body is `400`.
+
+`GET /api/v1/sites/:siteId` is the poll response: the site, its meters, and `bill_counts` of `{ ok, needs_parser, needs_password, failed, total }`. `needs_password` counts stored rows whose `notes` start with `needs_password` (the row's `status` is `failed`). Those rows are not also counted in `failed`. `total` is every bill row on the site.
+
+`POST /api/v1/sites/:siteId/bills` accepts `multipart/form-data`. File fields are `pdfs` (repeat for several files) and `pdf` (one file). Both are ingested, `pdfs` first. Optional `pdf_password` is the same one password the HTML form applies to every file in the submission. It is not stored. At most 25 files are parsed; the rest are `rejected` with detail `limit 25 files`. Each file goes through `ingestPdf`, the same function as `POST /sites/:id/upload`. The response is `200` JSON:
+
+```json
+{
+  "site_id": "...",
+  "results": [{ "source_file": "bill1.pdf", "meter_id": "...", "status": "ok", "detail": "..." }],
+  "counts": { "ok": 1, "needs_parser": 0, "needs_password": 0, "failed": 0, "rejected": 0 },
+  "meters": []
+}
+```
+
+`status` is `ok`, `needs_parser`, `needs_password`, `failed`, or `rejected`. `detail` is omitted when empty. A request with no file is `400` `{ "error": "no_files" }`.
+
+Sun Daddy flow: create a site (optional when the site already exists) → upload PDFs → poll `GET /api/v1/sites/:siteId` → `GET /api/v1/sites/:siteId/export.json`.
+
+```bash
+curl -X POST "$BASE/api/v1/sites" -H "Authorization: Bearer $API_TOKEN" -H "Content-Type: application/json" -d '{"name":"Acme Warehouse"}'
+curl -X POST "$BASE/api/v1/sites/$SITE_ID/bills" -H "Authorization: Bearer $API_TOKEN" -F "pdfs=@bill1.pdf" -F "pdfs=@bill2.pdf"
+curl "$BASE/api/v1/sites/$SITE_ID" -H "Authorization: Bearer $API_TOKEN"
+```
 
 ### Secret and deploy
 
-Generate a token locally and store it only as a Worker secret (and in Sun Daddy's server config). `.dev.vars` is gitignored and is what `wrangler dev` reads. `wrangler secret put` prompts for the value; it is not written to the repo.
+Generate a token locally and store it only as a Worker secret (and in Sun Daddy's server config). `.dev.vars` is gitignored and is what `wrangler dev` reads. `wrangler secret put` prompts for the value; it is not written to the repo. This change does not add a new secret. It does add `migrations/0005_site_profile.sql`. Apply that migration before deploying the worker that selects and inserts the new site columns. Until it runs, list and create fail with a missing-column error.
 
 ```bash
 openssl rand -base64 32
 npx wrangler secret put API_TOKEN
+npm run db:migrate:remote
 npm run deploy
 ```
 
-There is no schema change in this API, so a remote migration is not required for it. Local dev:
+Skip `wrangler secret put` when `API_TOKEN` is already set on the Worker. Local dev:
 
 ```bash
+npm run db:migrate:local
 printf 'API_TOKEN=%s\n' 'paste-the-token' > .dev.vars
 npm run dev
 ```
@@ -105,6 +137,17 @@ npm run dev
 ```bash
 export API_TOKEN='paste-the-token'
 BASE=https://kw-catcher.braydenm.workers.dev
+
+curl -X POST "$BASE/api/v1/sites" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Warehouse"}'
+
+curl -X POST "$BASE/api/v1/sites/$SITE_ID/bills" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -F "pdfs=@bill1.pdf" -F "pdfs=@bill2.pdf"
+
+curl "$BASE/api/v1/sites/$SITE_ID" -H "Authorization: Bearer $API_TOKEN"
 
 curl -sS "$BASE/api/v1/sites" -H "Authorization: Bearer $API_TOKEN"
 
@@ -119,7 +162,7 @@ curl -sS "$BASE/api/v1/sites/$SITE_ID/export.json" -H "X-API-Token: $API_TOKEN"
 
 ### CORS
 
-Browsers on Sun Daddy Pages can call `/api/*`. Allowed request headers are `Authorization`, `X-API-Token`, and `Content-Type`. When `CORS_ORIGINS` is unset, the allowlist is:
+Browsers on Sun Daddy Pages can call `/api/*`. Allowed methods are `GET`, `POST`, and `OPTIONS`. Allowed request headers are `Authorization`, `X-API-Token`, and `Content-Type`. When `CORS_ORIGINS` is unset, the allowlist is:
 
 - `https://sun-daddy.pages.dev` and `https://*.sun-daddy.pages.dev`
 - `https://sundaddy.pages.dev` and `https://*.sundaddy.pages.dev`
@@ -173,7 +216,7 @@ npm run build
 
 ## Data model
 
-- `sites` — a location
+- `sites` — a location. `id`, `name`, and `created_at`, plus optional profile columns from `migrations/0005_site_profile.sql`: `utility`, `address`, `city`, `state`, `zip`, `notes`, `customer_name`. The HTML create form still only sets `name`.
 - `meters` — one utility meter on a site
 - `bills` — one row per meter per billing period (or one row per unmatched file). Several rows may share `r2_key` when they came from the same PDF, whether that file has several meters or several billing periods. Totals are not rolled up across meters or periods.
 
