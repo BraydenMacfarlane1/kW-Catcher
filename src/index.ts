@@ -79,10 +79,11 @@ app.post("/sites/:id/upload", async (c) => {
   const site = await getSite(c.env.DB, id);
   if (!site) return c.notFound();
   const form = await c.req.formData();
+  const password = formPassword(form);
   const files = form.getAll("pdfs").filter((entry): entry is File => entry instanceof File && entry.size > 0);
   const results: IngestResult[] = [];
   for (const file of files.slice(0, 25)) {
-    results.push(...(await ingestPdf(c.env, id, file)));
+    results.push(...(await ingestPdf(c.env, id, file, { password })));
   }
   for (const file of files.slice(25)) {
     results.push({ sourceFile: file.name || "bill.pdf", meterId: "", status: "rejected", detail: "limit 25 files" });
@@ -95,7 +96,7 @@ app.post("/sites/:id/reparse", async (c) => {
   if (!isId(id)) return c.notFound();
   const site = await getSite(c.env.DB, id);
   if (!site) return c.notFound();
-  const results = await reparseStoredBills(c.env, id);
+  const results = await reparseStoredBills(c.env, id, await optionalFormPassword(c.req.raw));
   return c.redirect(resultLocation(id, "reparsed", results), 303);
 });
 
@@ -158,9 +159,24 @@ function isMissingTable(error: unknown): boolean {
   return error instanceof Error && /no such table/i.test(error.message);
 }
 
+const RESULT_KEYS = ["ok", "needs_parser", "needs_password", "failed", "rejected"] as const;
+
+function formPassword(form: FormData): string | undefined {
+  const value = form.get("pdf_password");
+  if (typeof value !== "string") return undefined;
+  const password = value.trim();
+  return password || undefined;
+}
+
+async function optionalFormPassword(request: Request): Promise<string | undefined> {
+  const type = request.headers.get("content-type") ?? "";
+  if (!type.includes("application/x-www-form-urlencoded") && !type.includes("multipart/form-data")) return undefined;
+  return formPassword(await request.formData());
+}
+
 function queryCounts(c: { req: { query: (name: string) => string | undefined } }): Record<string, string> {
   const counts: Record<string, string> = {};
-  for (const key of ["ok", "needs_parser", "failed", "rejected"]) {
+  for (const key of RESULT_KEYS) {
     const value = c.req.query(key);
     counts[key] = value && /^\d+$/.test(value) ? value : "0";
   }
@@ -168,7 +184,13 @@ function queryCounts(c: { req: { query: (name: string) => string | undefined } }
 }
 
 function resultLocation(siteId: string, notice: string, results: IngestResult[]): string {
-  const counts = { ok: 0, needs_parser: 0, failed: 0, rejected: 0 };
+  const counts: Record<(typeof RESULT_KEYS)[number], number> = {
+    ok: 0,
+    needs_parser: 0,
+    needs_password: 0,
+    failed: 0,
+    rejected: 0,
+  };
   for (const result of results) counts[result.status] += 1;
   const params = new URLSearchParams({ notice, ...Object.fromEntries(Object.entries(counts).map(([key, value]) => [key, String(value)])) });
   return `/sites/${siteId}?${params.toString()}`;
