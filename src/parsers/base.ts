@@ -58,7 +58,7 @@ export type BillStatus = "ok" | "needs_parser" | "failed";
 export interface BillParser {
   id: string;
   match(text: string): boolean;
-  /** One row per meter. Do not combine kWh or demand across meters. */
+  /** One row per meter per billing period. Do not combine kWh or demand across meters or periods. */
   parse(text: string, sourceFile: string): BillDraft[];
 }
 
