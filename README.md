@@ -62,8 +62,78 @@ That writes `migrations/0002_seed_xu_holdings.sql` (the original bill columns, s
 3. Each meter on a PDF becomes its own bill row, and each billing period in a combined multi-statement PDF becomes its own bill row (the same result as uploading those months as separate PDFs). The row count is the number of statements in the file. That length is not fixed: two statements become two rows, and a full year or longer (12+ months) becomes one row per statement. Those rows share one R2 object (`r2_key`) and upsert on `(site_id, meter_id, billing_period_start, billing_period_end)`. kWh and demand are stored per meter and per period and are never added together. A file that does not identify a meter and period upserts on a hash source key.
 4. The site page shows a separate table per `meter_id`. Missing months are computed for that meter only, between its own earliest and latest bill.
 5. If no parser matches, one `needs_parser` row is saved: the PDF and a text excerpt are kept, and bill fields are left blank (`line_items_json` is `[]`).
-6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the Sun Daddy ingest contract v1 columns, one row per meter, with no total row. `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`) are appended after the contract columns.
+6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the Sun Daddy ingest contract v1 columns, one row per meter, with no total row. `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`) are appended after the contract columns. The HTML pages and these two URLs stay unauthenticated.
 7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter or period row).
+
+## Read API
+
+Sun Daddy pulls the same rows over JSON and CSV. Worker name in `wrangler.jsonc` is `kw-catcher`, which deploys to `https://kw-catcher.braydenm.workers.dev` (no custom domain in config). Column names are Sun Daddy ingest contract v1. JSON values are strings, the same cells as the CSV.
+
+`GET /api/health` stays public. Every `/api/v1/*` route requires the Worker secret `API_TOKEN`. Send `Authorization: Bearer <token>` or `X-API-Token: <token>`. A missing secret, missing token, or wrong token is `401` with `{ "error": "unauthorized" }`. The token is not in the repo.
+
+| Method | Path | Auth | Body |
+| --- | --- | --- | --- |
+| `GET` | `/api/health` | public | `{ "ok": true }` |
+| `GET` | `/api/v1/sites` | token | JSON array of sites, each with nested `meters` (`id`, `name`, `meter_id`, and the other meter columns already in D1) |
+| `GET` | `/api/v1/sites/:siteId/export.csv` | token | All meters on the site. Same file as the UI all-meters CSV |
+| `GET` | `/api/v1/sites/:siteId/export.json` | token | JSON array of those rows |
+| `GET` | `/api/v1/sites/:siteId/meters/:meterId/export.csv` | token | One meter. Same file as **Download this meter** |
+| `GET` | `/api/v1/sites/:siteId/meters/:meterId/export.json` | token | JSON array of that meter's rows |
+| `OPTIONS` | `/api/v1/*` and `/api/health` | public | CORS preflight. No token |
+
+A meter export with no rows is `404` `{ "error": "not_found" }`, matching the UI. A site export with no rows is `200` and an empty CSV (header only) or `[]`.
+
+### Secret and deploy
+
+Generate a token locally and store it only as a Worker secret (and in Sun Daddy's server config). `.dev.vars` is gitignored and is what `wrangler dev` reads. `wrangler secret put` prompts for the value; it is not written to the repo.
+
+```bash
+openssl rand -base64 32
+npx wrangler secret put API_TOKEN
+npm run deploy
+```
+
+There is no schema change in this API, so a remote migration is not required for it. Local dev:
+
+```bash
+printf 'API_TOKEN=%s\n' 'paste-the-token' > .dev.vars
+npm run dev
+```
+
+### Examples
+
+```bash
+export API_TOKEN='paste-the-token'
+BASE=https://kw-catcher.braydenm.workers.dev
+
+curl -sS "$BASE/api/v1/sites" -H "Authorization: Bearer $API_TOKEN"
+
+curl -sS "$BASE/api/v1/sites/$SITE_ID/meters/$METER_ID/export.csv" \
+  -H "Authorization: Bearer $API_TOKEN" -o meter.csv
+
+curl -sS "$BASE/api/v1/sites/$SITE_ID/meters/$METER_ID/export.json" \
+  -H "Authorization: Bearer $API_TOKEN"
+
+curl -sS "$BASE/api/v1/sites/$SITE_ID/export.json" -H "X-API-Token: $API_TOKEN"
+```
+
+### CORS
+
+Browsers on Sun Daddy Pages can call `/api/*`. Allowed request headers are `Authorization`, `X-API-Token`, and `Content-Type`. When `CORS_ORIGINS` is unset, the allowlist is:
+
+- `https://sun-daddy.pages.dev` and `https://*.sun-daddy.pages.dev`
+- `https://sundaddy.pages.dev` and `https://*.sundaddy.pages.dev`
+- `http://localhost:5173`, `http://127.0.0.1:5173`, `http://localhost:8788`, `http://127.0.0.1:8788`
+
+`*` is a glob (`https://preview.sun-daddy.pages.dev` matches the sun-daddy preview entry). Setting `CORS_ORIGINS` replaces that list. Use it for a custom domain:
+
+```bash
+printf '%s' 'https://app.example.com,https://sun-daddy.pages.dev,https://*.sun-daddy.pages.dev,http://localhost:5173' \
+  | npx wrangler secret put CORS_ORIGINS
+npm run deploy
+```
+
+You can put the same comma-separated value in `wrangler.jsonc` under `"vars"` instead of a secret. Do not put `API_TOKEN` in `wrangler.jsonc`.
 
 ## Add a parser
 

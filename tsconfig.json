@@ -13,5 +13,5 @@
     "noUnusedParameters": true,
     "types": ["./worker-configuration.d.ts", "node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "worker-configuration.d.ts"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "test/**/*.ts", "worker-configuration.d.ts"]
 }

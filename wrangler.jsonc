@@ -30,4 +30,6 @@
       "bucket_name": "kw-catcher-bills"
     }
   ]
+  // API_TOKEN is a Worker secret (not a var): npx wrangler secret put API_TOKEN
+  // Optional CORS_ORIGINS secret or var overrides the default allowlist in src/api.ts.
 }
