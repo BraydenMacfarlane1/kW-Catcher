@@ -1,8 +1,20 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
-import { getSite, listBills, listMeters, listSites, type BillRow, type MeterRow, type SiteRow } from "./db";
+import {
+  createSite,
+  findSiteIdByName,
+  getSite,
+  listBills,
+  listMeters,
+  listSites,
+  type BillRow,
+  type MeterRow,
+  type SiteInput,
+  type SiteRow,
+} from "./db";
 import { billExportRecords, csvResponse, fileSlug } from "./export";
 import { isId, isMeterId } from "./ids";
+import { ingestPdf, type IngestResult } from "./ingest";
 
 /**
  * Browser origins allowed to call /api/* when CORS_ORIGINS is unset.
@@ -21,6 +33,13 @@ export const DEFAULT_CORS_ORIGINS = [
 ] as const;
 
 const ALLOW_HEADERS = ["Authorization", "X-API-Token", "Content-Type"];
+const ALLOW_METHODS = ["GET", "POST", "OPTIONS"];
+const NAME_MAX = 200;
+const SHORT_MAX = 200;
+const LONG_MAX = 2000;
+const MAX_UPLOAD_FILES = 25;
+const PROFILE_FIELDS = ["utility", "address", "city", "state", "zip", "notes", "customer_name"] as const;
+const INGEST_COUNT_KEYS = ["ok", "needs_parser", "needs_password", "failed", "rejected"] as const;
 
 export function parseCorsOrigins(configured: string | undefined): string[] {
   const raw = configured?.trim();
@@ -62,7 +81,7 @@ export function tokensEqual(provided: string, expected: string): boolean {
   return diff === 0;
 }
 
-export function mountReadApi(app: Hono<{ Bindings: Env }>): void {
+export function mountApi(app: Hono<{ Bindings: Env }>): void {
   app.use("*", apiCors());
   app.use("*", requireApiToken);
 
@@ -75,6 +94,75 @@ export function mountReadApi(app: Hono<{ Bindings: Env }>): void {
       })),
     );
     return c.json(body);
+  });
+
+  app.post("/api/v1/sites", async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "invalid_body" }, 400);
+    }
+    const parsed = readCreateSite(body);
+    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    if (await findSiteIdByName(c.env.DB, parsed.name)) {
+      return c.json({ error: "name_taken" }, 409);
+    }
+    try {
+      const site = await createSite(c.env.DB, parsed.name, parsed.profile);
+      return c.json({ ...siteJson(site), meters: [] }, 201);
+    } catch (error) {
+      if (isSiteNameTaken(error)) return c.json({ error: "name_taken" }, 409);
+      throw error;
+    }
+  });
+
+  app.get("/api/v1/sites/:siteId", async (c) => {
+    const loaded = await loadSite(c, c.req.param("siteId"));
+    if (!loaded.ok) return loaded.response;
+    const [meters, bills] = await Promise.all([
+      listMeters(c.env.DB, loaded.site.id),
+      listBills(c.env.DB, loaded.site.id),
+    ]);
+    return c.json({
+      ...siteJson(loaded.site),
+      meters: meters.map(meterJson),
+      bill_counts: billCounts(bills),
+    });
+  });
+
+  app.post("/api/v1/sites/:siteId/bills", async (c) => {
+    const siteId = c.req.param("siteId");
+    const loaded = await loadSite(c, siteId);
+    if (!loaded.ok) return loaded.response;
+    let form: FormData;
+    try {
+      form = await c.req.formData();
+    } catch {
+      return c.json({ error: "invalid_body" }, 400);
+    }
+    const files = pdfFiles(form);
+    if (files.length === 0) return c.json({ error: "no_files" }, 400);
+    const password = pdfPassword(form);
+    const results: IngestResult[] = [];
+    for (const file of files.slice(0, MAX_UPLOAD_FILES)) {
+      results.push(...(await ingestPdf(c.env, siteId, file, { password })));
+    }
+    for (const file of files.slice(MAX_UPLOAD_FILES)) {
+      results.push({
+        sourceFile: file.name || "bill.pdf",
+        meterId: "",
+        status: "rejected",
+        detail: "limit 25 files",
+      });
+    }
+    const meters = await listMeters(c.env.DB, siteId);
+    return c.json({
+      site_id: siteId,
+      results: results.map(resultJson),
+      counts: ingestCounts(results),
+      meters: meters.map(meterJson),
+    });
   });
 
   app.get("/api/v1/sites/:siteId/export.csv", async (c) => {
@@ -109,7 +197,7 @@ function apiCors(): MiddlewareHandler<{ Bindings: Env }> {
     const allowed = parseCorsOrigins(c.env.CORS_ORIGINS);
     return cors({
       origin: (origin) => (originAllowed(origin, allowed) ? origin : null),
-      allowMethods: ["GET", "OPTIONS"],
+      allowMethods: ALLOW_METHODS,
       allowHeaders: ALLOW_HEADERS,
       exposeHeaders: ["Content-Disposition"],
       maxAge: 86_400,
@@ -148,8 +236,118 @@ async function loadExport(c: Context<{ Bindings: Env }>, siteId: string, meterId
   return { ok: true, site, bills };
 }
 
-function siteJson(site: SiteRow): Pick<SiteRow, "id" | "name" | "created_at"> {
-  return { id: site.id, name: site.name, created_at: site.created_at };
+function siteJson(site: SiteRow): SiteRow {
+  return {
+    id: site.id,
+    name: site.name,
+    created_at: site.created_at,
+    utility: site.utility,
+    address: site.address,
+    city: site.city,
+    state: site.state,
+    zip: site.zip,
+    notes: site.notes,
+    customer_name: site.customer_name,
+  };
+}
+
+type LoadedSite =
+  | { ok: true; site: SiteRow }
+  | { ok: false; response: Response };
+
+async function loadSite(c: Context<{ Bindings: Env }>, siteId: string): Promise<LoadedSite> {
+  if (!isId(siteId)) return { ok: false, response: c.json({ error: "not_found" }, 404) };
+  const site = await getSite(c.env.DB, siteId);
+  if (!site) return { ok: false, response: c.json({ error: "not_found" }, 404) };
+  return { ok: true, site };
+}
+
+function readCreateSite(
+  body: unknown,
+): { ok: true; name: string; profile: SiteInput } | { ok: false; error: "invalid_body" | "invalid_name" | "invalid_field" } {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "invalid_body" };
+  const record = body as Record<string, unknown>;
+  if (typeof record.name !== "string") return { ok: false, error: "invalid_name" };
+  const name = record.name.trim();
+  if (!name || name.length > NAME_MAX) return { ok: false, error: "invalid_name" };
+  const profile: SiteInput = {};
+  for (const field of PROFILE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(record, field) || record[field] == null) continue;
+    const value = record[field];
+    if (typeof value !== "string") return { ok: false, error: "invalid_field" };
+    const trimmed = value.trim();
+    const max = field === "address" || field === "notes" ? LONG_MAX : SHORT_MAX;
+    if (trimmed.length > max) return { ok: false, error: "invalid_field" };
+    profile[field] = trimmed;
+  }
+  return { ok: true, name, profile };
+}
+
+function isSiteNameTaken(error: unknown): boolean {
+  return error instanceof Error && /UNIQUE constraint failed: sites\.name/i.test(error.message);
+}
+
+function billCounts(bills: Pick<BillRow, "status" | "notes">[]): {
+  ok: number;
+  needs_parser: number;
+  needs_password: number;
+  failed: number;
+  total: number;
+} {
+  const counts = { ok: 0, needs_parser: 0, needs_password: 0, failed: 0, total: bills.length };
+  for (const bill of bills) {
+    if (bill.notes.startsWith("needs_password")) {
+      counts.needs_password += 1;
+      continue;
+    }
+    if (bill.status === "ok" || bill.status === "needs_parser" || bill.status === "failed") {
+      counts[bill.status] += 1;
+    }
+  }
+  return counts;
+}
+
+function pdfFiles(form: FormData): File[] {
+  const files: File[] = [];
+  for (const field of ["pdfs", "pdf"]) {
+    for (const entry of form.getAll(field)) {
+      if (entry instanceof File && entry.size > 0) files.push(entry);
+    }
+  }
+  return files;
+}
+
+function pdfPassword(form: FormData): string | undefined {
+  const value = form.get("pdf_password");
+  if (typeof value !== "string") return undefined;
+  const password = value.trim();
+  return password || undefined;
+}
+
+function resultJson(result: IngestResult): {
+  source_file: string;
+  meter_id: string;
+  status: IngestResult["status"];
+  detail?: string;
+} {
+  const body: {
+    source_file: string;
+    meter_id: string;
+    status: IngestResult["status"];
+    detail?: string;
+  } = {
+    source_file: result.sourceFile,
+    meter_id: result.meterId,
+    status: result.status,
+  };
+  if (result.detail) body.detail = result.detail;
+  return body;
+}
+
+function ingestCounts(results: IngestResult[]): Record<(typeof INGEST_COUNT_KEYS)[number], number> {
+  const counts = { ok: 0, needs_parser: 0, needs_password: 0, failed: 0, rejected: 0 };
+  for (const result of results) counts[result.status] += 1;
+  return counts;
 }
 
 function meterJson(meter: MeterRow): MeterRow {

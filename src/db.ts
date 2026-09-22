@@ -4,7 +4,27 @@ export interface SiteRow {
   id: string;
   name: string;
   created_at: string;
+  utility: string;
+  address: string;
+  city: string;
+  state: string;
+  zip: string;
+  notes: string;
+  customer_name: string;
 }
+
+/** Optional fields accepted by POST /api/v1/sites. Blank when omitted. */
+export interface SiteInput {
+  utility?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  notes?: string;
+  customer_name?: string;
+}
+
+const SITE_COLUMNS = "id, name, created_at, utility, address, city, state, zip, notes, customer_name";
 
 export interface MeterRow {
   id: string;
@@ -41,23 +61,48 @@ export function sourceKeyFor(siteId: string, fields: BillDraft, contentHash: str
 }
 
 export async function listSites(db: D1Database): Promise<SiteRow[]> {
-  const result = await db.prepare("SELECT id, name, created_at FROM sites ORDER BY name").all<SiteRow>();
+  const result = await db.prepare(`SELECT ${SITE_COLUMNS} FROM sites ORDER BY name`).all<SiteRow>();
   return result.results;
 }
 
 export async function getSite(db: D1Database, id: string): Promise<SiteRow | null> {
-  return db.prepare("SELECT id, name, created_at FROM sites WHERE id = ?").bind(id).first<SiteRow>();
+  return db.prepare(`SELECT ${SITE_COLUMNS} FROM sites WHERE id = ?`).bind(id).first<SiteRow>();
 }
 
-export async function createSite(db: D1Database, name: string): Promise<SiteRow> {
+export async function findSiteIdByName(db: D1Database, name: string): Promise<string | null> {
+  const row = await db.prepare("SELECT id FROM sites WHERE name = ?").bind(name).first<{ id: string }>();
+  return row?.id ?? null;
+}
+
+export async function createSite(db: D1Database, name: string, input: SiteInput = {}): Promise<SiteRow> {
   const row: SiteRow = {
     id: crypto.randomUUID(),
     name,
     created_at: new Date().toISOString(),
+    utility: input.utility ?? "",
+    address: input.address ?? "",
+    city: input.city ?? "",
+    state: input.state ?? "",
+    zip: input.zip ?? "",
+    notes: input.notes ?? "",
+    customer_name: input.customer_name ?? "",
   };
   await db
-    .prepare("INSERT INTO sites (id, name, created_at) VALUES (?, ?, ?)")
-    .bind(row.id, row.name, row.created_at)
+    .prepare(
+      `INSERT INTO sites (${SITE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      row.id,
+      row.name,
+      row.created_at,
+      row.utility,
+      row.address,
+      row.city,
+      row.state,
+      row.zip,
+      row.notes,
+      row.customer_name,
+    )
     .run();
   return row;
 }
