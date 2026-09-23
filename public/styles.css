@@ -97,6 +97,11 @@ button, a.button {
 }
 
 .title-row { display: flex; justify-content: space-between; gap: 1rem; align-items: center; flex-wrap: wrap; }
+.actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+button.danger { background: #b91c1c; }
+.danger-zone { border: 1px solid #fecaca; background: var(--paper); padding: 0.2rem 0.9rem 0.6rem; margin-top: 1.4rem; }
+form.row-delete { margin: 0; }
+form.row-delete input { width: 9rem; }
 .crumb, .meta, .hint { color: var(--muted); }
 .banner { background: var(--ok); border: 1px solid #a7f3d0; padding: 0.55rem 0.7rem; }
 .banner.warn { background: var(--gap); border-color: #fcd34d; }

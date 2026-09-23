@@ -64,12 +64,13 @@ That writes `migrations/0002_seed_xu_holdings.sql` (the original bill columns, s
 5. If no parser matches, one `needs_parser` row is saved: the PDF and a text excerpt are kept, and bill fields are left blank (`line_items_json` is `[]`).
 6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the Sun Daddy ingest contract v1 columns, one row per meter, with no total row. `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`) are appended after the contract columns. The HTML pages and these two URLs stay unauthenticated.
 7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter or period row).
+8. **Delete site** is on the site page and on the home list. Type the site name and submit. `POST /sites/:id/delete` removes that site's D1 rows (the site, its meters, and its bills) and the R2 objects for its stored PDFs, including a file under `sites/<id>/` that no longer has a bill row. A name that does not match redirects back to the site with a warning and deletes nothing. Success redirects to the home page with a short notice. This is an HTML form, like create and upload. It is not part of `/api/v1`, and Sun Daddy has no delete route.
 
 ## HTTP API
 
 Sun Daddy creates sites, uploads bill PDFs, and pulls the same rows over JSON and CSV. Worker name in `wrangler.jsonc` is `kw-catcher`, which deploys to `https://kw-catcher.braydenm.workers.dev` (no custom domain in config). Column names are Sun Daddy ingest contract v1. JSON values are strings, the same cells as the CSV.
 
-`GET /api/health` stays public. Every `/api/v1/*` route requires the Worker secret `API_TOKEN`. Send `Authorization: Bearer <token>` or `X-API-Token: <token>`. A missing secret, missing token, or wrong token is `401` with `{ "error": "unauthorized" }`. The token is not in the repo. The HTML pages and `POST /sites` / `POST /sites/:id/upload` stay unauthenticated.
+`GET /api/health` stays public. Every `/api/v1/*` route requires the Worker secret `API_TOKEN`. Send `Authorization: Bearer <token>` or `X-API-Token: <token>`. A missing secret, missing token, or wrong token is `401` with `{ "error": "unauthorized" }`. The token is not in the repo. The HTML pages and `POST /sites`, `POST /sites/:id/upload`, and `POST /sites/:id/delete` stay unauthenticated. Deleting a site is that HTML form only. `/api/v1` has no delete route.
 
 | Method | Path | Auth | Body |
 | --- | --- | --- | --- |

@@ -74,6 +74,26 @@ export async function findSiteIdByName(db: D1Database, name: string): Promise<st
   return row?.id ?? null;
 }
 
+/** R2 keys stored on this site's bill rows. Shared files appear once. */
+export async function listSiteR2Keys(db: D1Database, siteId: string): Promise<string[]> {
+  const result = await db
+    .prepare(
+      "SELECT DISTINCT r2_key FROM bills WHERE site_id = ? AND r2_key IS NOT NULL AND r2_key <> ''",
+    )
+    .bind(siteId)
+    .all<{ r2_key: string }>();
+  return result.results.map((row) => row.r2_key);
+}
+
+/** Removes bills, meters, then the site. Child rows go first so foreign keys hold. */
+export async function deleteSiteRows(db: D1Database, siteId: string): Promise<void> {
+  await db.batch([
+    db.prepare("DELETE FROM bills WHERE site_id = ?").bind(siteId),
+    db.prepare("DELETE FROM meters WHERE site_id = ?").bind(siteId),
+    db.prepare("DELETE FROM sites WHERE id = ?").bind(siteId),
+  ]);
+}
+
 export async function createSite(db: D1Database, name: string, input: SiteInput = {}): Promise<SiteRow> {
   const row: SiteRow = {
     id: crypto.randomUUID(),

@@ -45,19 +45,21 @@ export function renderHome(sites: { site: SiteRow; meters: number; bills: number
             <td>${entry.meters}</td>
             <td>${entry.bills}</td>
             <td>${entry.gaps === 0 ? "0" : `<strong>${entry.gaps}</strong>`}</td>
+            <td>${renderDeleteForm(entry.site, true)}</td>
           </tr>`,
         )
         .join("")
-    : `<tr><td colspan="4">No sites yet. Create one, or apply the D1 migrations to load the XU Holdings seed.</td></tr>`;
+    : `<tr><td colspan="5">No sites yet. Create one, or apply the D1 migrations to load the XU Holdings seed.</td></tr>`;
 
   return page(
     "Sites",
     `${banner}
     <h1>Sites</h1>
     <table>
-      <thead><tr><th>Site</th><th>Meters</th><th>Bills</th><th>Missing months</th></tr></thead>
+      <thead><tr><th>Site</th><th>Meters</th><th>Bills</th><th>Missing months</th><th>Delete</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    <p class="hint">To delete a site, type its name in that row. The site, its meters, its bills, and its stored PDFs are removed.</p>
     <h2>New site</h2>
     <form method="post" action="/sites">
       <label>Name <input name="name" required maxlength="200" placeholder="Site name"></label>
@@ -93,7 +95,10 @@ export function renderSite(input: {
     <p class="crumb"><a href="/">Sites</a> / ${esc(input.site.name)}</p>
     <div class="title-row">
       <h1>${esc(input.site.name)}</h1>
-      <a class="button" href="/sites/${esc(input.site.id)}/export.csv">All meters CSV</a>
+      <span class="actions">
+        <a class="button" href="/sites/${esc(input.site.id)}/export.csv">All meters CSV</a>
+        <a href="#delete-site">Delete site</a>
+      </span>
     </div>
     <section class="upload">
       <h2>Upload bills</h2>
@@ -108,7 +113,8 @@ export function renderSite(input: {
       </form>
       <p class="hint">A PDF with several meters becomes one row per meter. A combined PDF becomes one row per billing period under that meter, for however many statements it contains (a full year, or longer). Those rows share the stored file. kWh and demand are never added across meters or periods. A scanned PDF with no text layer is read with OCR, one row per statement found. Unknown utilities are saved as <code>needs_parser</code> with the PDF and a text excerpt. Fields are left blank. One password applies to every file in that upload. Leave it blank when the PDF is not encrypted. The stored file stays as uploaded, so re-parse asks for the password again. A missing or wrong password is <code>needs_password</code> and does not fill in bill amounts.</p>
     </section>
-    ${sections}`,
+    ${sections}
+    ${renderDeleteForm(input.site, false)}`,
   );
 }
 
@@ -173,8 +179,33 @@ function renderExcerpts(bills: BillRow[]): string {
     .join("");
 }
 
-export function renderBanner(notice: string | null, counts: Record<string, string>): string {
+function renderDeleteForm(site: SiteRow, compact: boolean): string {
+  const action = `/sites/${esc(site.id)}/delete`;
+  if (compact) {
+    return `<form method="post" action="${action}" class="row-delete">
+      <label>Type name <input name="confirm_name" required maxlength="200" autocomplete="off" spellcheck="false" placeholder="Site name"></label>
+      <button type="submit" class="danger">Delete</button>
+    </form>`;
+  }
+  return `<section class="danger-zone" id="delete-site">
+    <h2>Delete site</h2>
+    <p class="hint">Removes this site, its meters, its bills, and the stored PDFs. This cannot be undone. Type the site name to confirm.</p>
+    <form method="post" action="${action}">
+      <label>Type <strong>${esc(site.name)}</strong> to confirm
+        <input name="confirm_name" required maxlength="200" autocomplete="off" spellcheck="false">
+      </label>
+      <button type="submit" class="danger">Delete site</button>
+    </form>
+  </section>`;
+}
+
+export function renderBanner(notice: string | null, counts: Record<string, string>, detail = ""): string {
   if (notice === "created") return `<p class="banner">Site created.</p>`;
+  if (notice === "deleted") {
+    const name = detail.trim();
+    return name ? `<p class="banner">Deleted ${esc(name)}.</p>` : `<p class="banner">Site deleted.</p>`;
+  }
+  if (notice === "confirm") return `<p class="banner warn">Type the site name exactly to delete it.</p>`;
   if (notice === "name") return `<p class="banner warn">Enter a site name.</p>`;
   if (notice === "uploaded" || notice === "reparsed") {
     const label = notice === "uploaded" ? "Upload" : "Re-parse";
