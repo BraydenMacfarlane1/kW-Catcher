@@ -2,6 +2,8 @@ import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { extractImages, getDocumentProxy } from "unpdf";
 import { PNG } from "pngjs";
+import { openFax, type FaxBook } from "./fax";
+import { orientationOf, rotateRgba, type QuarterTurn, type Rgba } from "./orient";
 
 type OpenPdf = Awaited<ReturnType<typeof getDocumentProxy>>;
 
@@ -57,24 +59,31 @@ export function textLayerIsEmpty(text: string): boolean {
   return (letters?.length ?? 0) < 40;
 }
 
-export async function ocrPdfDocument(pdf: OpenPdf, ai?: BillVision): Promise<string> {
+export async function ocrPdfDocument(pdf: OpenPdf, ai?: BillVision, bytes?: Uint8Array): Promise<string> {
+  const fax = bytes ? openFax(bytes) : null;
   const parts: string[] = [];
   for (let page = 1; page <= pdf.numPages; page += 1) {
-    parts.push(await ocrPage(pdf, page, ai));
+    parts.push(await ocrPage(pdf, page, ai, fax));
   }
   return parts.join(PAGE_BREAK);
 }
 
-async function ocrPage(pdf: OpenPdf, page: number, ai?: BillVision): Promise<string> {
-  let images: PageImage[] = [];
-  try {
-    images = await extractImages(pdf, page);
-  } catch {
-    return "";
-  }
-  const image = largest(images);
-  if (!image) return "";
-  const png = imageToGrayscalePng(image);
+/**
+ * Quarter turn chosen before OCR. Null when the page has no image, or when a
+ * grayscale sideways page still needs a text probe to pick CW vs CCW.
+ */
+export async function embeddedPageQuarterTurn(data: Uint8Array, page: number): Promise<QuarterTurn | null> {
+  const fax = openFax(data);
+  const raster = fax ? fax.pageImage(page - 1) : await embeddedRaster(await getDocumentProxy(data.slice()), page);
+  if (!raster) return null;
+  const decision = orientationOf(raster);
+  return "turn" in decision ? decision.turn : null;
+}
+
+async function ocrPage(pdf: OpenPdf, page: number, ai: BillVision | undefined, fax: FaxBook | null): Promise<string> {
+  const raster = fax?.pageImage(page - 1) ?? (await embeddedRaster(pdf, page));
+  if (!raster) return "";
+  const png = rgbaToPng(await orientRaster(raster));
   if (ai) {
     const transcribed = await transcribeWithVision(ai, png);
     if (!textLayerIsEmpty(transcribed) && /\b(?:kwh|account|schedule)\b/i.test(transcribed)) return transcribed;
@@ -88,6 +97,77 @@ async function ocrPage(pdf: OpenPdf, page: number, ai?: BillVision): Promise<str
   }
 }
 
+const PROBE_WORDS = [
+  "the",
+  "and",
+  "account",
+  "charge",
+  "charges",
+  "power",
+  "kwh",
+  "meter",
+  "schedule",
+  "service",
+  "total",
+  "amount",
+  "due",
+  "billing",
+  "energy",
+  "demand",
+  "tax",
+  "new",
+  "payment",
+  "balance",
+  "item",
+  "electric",
+  "rocky",
+  "vernal",
+  "terra",
+  "academy",
+  "mountain",
+  "kvarh",
+];
+
+async function embeddedRaster(pdf: OpenPdf, page: number): Promise<Rgba | null> {
+  try {
+    const image = largest(await extractImages(pdf, page));
+    return image ? pageImageToRgba(image) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function orientRaster(image: Rgba): Promise<Rgba> {
+  const decision = orientationOf(image);
+  if ("turn" in decision) return rotateRgba(image, decision.turn);
+  return rotateRgba(image, await probeQuarterTurn(image));
+}
+
+/** Blurry sideways photos have no reliable ink balance. Score both rotations. */
+async function probeQuarterTurn(image: Rgba): Promise<QuarterTurn> {
+  const recognize = await localRecognizer();
+  let best: QuarterTurn = 90;
+  let bestScore = -1;
+  for (const turn of [90, 270] as const) {
+    const text = await recognize(downscalePng(rgbaToPng(rotateRgba(image, turn)), 900));
+    const score = dictionaryScore(text);
+    if (score > bestScore) {
+      best = turn;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function dictionaryScore(text: string): number {
+  const lower = text.toLowerCase();
+  let score = 0;
+  for (const word of PROBE_WORDS) {
+    score += lower.match(new RegExp(`\\b${word}\\b`, "g"))?.length ?? 0;
+  }
+  return score;
+}
+
 function largest(images: readonly PageImage[]): PageImage | undefined {
   return images.reduce<PageImage | undefined>((best, image) => {
     if (!best) return image;
@@ -95,8 +175,8 @@ function largest(images: readonly PageImage[]): PageImage | undefined {
   }, undefined);
 }
 
-function imageToGrayscalePng(image: PageImage): Uint8Array {
-  const png = new PNG({ width: image.width, height: image.height });
+function pageImageToRgba(image: PageImage): Rgba {
+  const data = new Uint8Array(image.width * image.height * 4);
   const src = image.data;
   const channels = image.channels;
   for (let i = 0, pixel = 0; i < src.length; i += channels, pixel += 4) {
@@ -104,11 +184,17 @@ function imageToGrayscalePng(image: PageImage): Uint8Array {
       channels === 1
         ? src[i] ?? 0
         : Math.round(0.299 * (src[i] ?? 0) + 0.587 * (src[i + 1] ?? 0) + 0.114 * (src[i + 2] ?? 0));
-    png.data[pixel] = gray;
-    png.data[pixel + 1] = gray;
-    png.data[pixel + 2] = gray;
-    png.data[pixel + 3] = 255;
+    data[pixel] = gray;
+    data[pixel + 1] = gray;
+    data[pixel + 2] = gray;
+    data[pixel + 3] = 255;
   }
+  return { width: image.width, height: image.height, data };
+}
+
+function rgbaToPng(image: Rgba): Uint8Array {
+  const png = new PNG({ width: image.width, height: image.height });
+  png.data.set(image.data);
   return PNG.sync.write(png);
 }
 

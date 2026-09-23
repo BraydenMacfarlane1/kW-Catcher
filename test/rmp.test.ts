@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { sourceKeyFor } from "../src/db";
+import { faxQuarterTurns } from "../src/fax";
+import { embeddedPageQuarterTurn } from "../src/ocr";
 import { parseDocument } from "../src/parsers/registry";
 import { RMP_PARSER_ID, parseRockyMountainBills, rockyMountainParser } from "../src/parsers/rmp";
 import { sceParser } from "../src/parsers/sce";
@@ -304,4 +306,118 @@ MILLCREEK UT 84106-3211
     const starts = outcome.rows.map((row) => row.fields.billing_period_start);
     expect(new Set(starts).size).toBe(starts.length);
   }, 180_000);
+
+  it("turns duplex sideways fax pages and leaves an upright Schedule 6 scan alone", async () => {
+    const terra = new Uint8Array(readFileSync(new URL("./fixtures/rmp-terra-sideways.pdf", import.meta.url)));
+    const turns = faxQuarterTurns(terra);
+    expect(turns).toHaveLength(24);
+    expect(turns?.every((turn, index) => turn === (index % 2 === 0 ? 90 : 270))).toBe(true);
+
+    const upright = new Uint8Array(readFileSync(new URL("./fixtures/rmp-schedule6-scanned.pdf", import.meta.url)));
+    expect(faxQuarterTurns(upright)).toBeNull();
+    expect(await embeddedPageQuarterTurn(upright, 1)).toBe(0);
+  });
+
+  it("parses Schedule 6 and Schedule 23 as separate meter rows on a sideways scan", () => {
+    const text = readFileSync(new URL("./fixtures/rmp-terra-aug-oct.txt", import.meta.url), "utf8");
+    const rows = parseRockyMountainBills(text, "rmp-terra-sideways.pdf");
+    expect(rows.map((row) => `${row.billing_period_start}|${row.meter_id}`)).toEqual([
+      "2025-07-08|348204387",
+      "2025-07-08|348204388",
+      "2025-09-08|348204387",
+      "2025-09-08|348204388",
+    ]);
+
+    const augPortable = rows[0];
+    const augSchool = rows[1];
+    expect(augPortable?.billing_period_end).toBe("2025-08-07");
+    expect(augPortable?.billing_days).toBe("30");
+    expect(augPortable?.kwh_total).toBe("1040");
+    expect(augPortable?.demand_kw_max).toBe("4");
+    expect(augPortable?.rate_schedule).toBe("23");
+    expect(augPortable?.amount_due_usd).toBe("162.71");
+    expect(augPortable?.total_new_charges_usd).toBe("162.71");
+    expect(augPortable?.notes).toContain("this item's lines");
+    expect(augSchool?.kwh_total).toBe("27760");
+    expect(augSchool?.demand_kw_max).toBe("81");
+    expect(augSchool?.rate_schedule).toBe("6");
+    expect(augSchool?.billing_period_end).toBe("2025-08-07");
+    expect(augSchool?.amount_due_usd).toBe("4045.85");
+    expect(augSchool?.notes).toContain("account new charges minus");
+    expect(Number(augPortable?.amount_due_usd) + Number(augSchool?.amount_due_usd)).toBeCloseTo(4208.56, 2);
+    expect(augSchool?.amount_due_usd).not.toBe("4208.56");
+
+    const octPortable = rows[2];
+    const octSchool = rows[3];
+    expect(octPortable?.billing_period_end).toBe("2025-10-07");
+    expect(octPortable?.billing_days).toBe("29");
+    expect(octPortable?.kwh_total).toBe("720");
+    expect(octPortable?.demand_kw_max).toBe("19");
+    expect(octPortable?.rate_schedule).toBe("23");
+    expect(octPortable?.amount_due_usd).toBe("99.34");
+    expect(octSchool?.kwh_total).toBe("31920");
+    expect(octSchool?.demand_kw_max).toBe("120");
+    expect(octSchool?.rate_schedule).toBe("6");
+    expect(octSchool?.amount_due_usd).toBe("5202.45");
+    expect(Number(octPortable?.amount_due_usd) + Number(octSchool?.amount_due_usd)).toBeCloseTo(5301.79, 2);
+
+    for (const row of rows) {
+      expect(row?.customer_name).toBe("TERRA ACADEMY");
+      expect(row?.customer_account).toBe("41652777-0018");
+      expect(row?.service_address).toBe("267 S AGGIE BLVD");
+      expect(row?.service_city).toBe("VERNAL");
+      expect(row?.service_state).toBe("UT");
+      expect(row?.service_zip).toBe("84078-7603");
+      expect(row?.parser_id).toBe(RMP_PARSER_ID);
+      expect(row?.kwh_on_peak).toBe("");
+      expect(row?.kwh_mid_peak).toBe("");
+      expect(row?.kwh_off_peak).toBe("");
+      expect(row?.kwh_super_off_peak).toBe("");
+      expect(row?.amount_due_usd).toBe(row?.total_new_charges_usd);
+    }
+    expect(augPortable?.bill_prepared_date).toBe("2025-08-08");
+    expect(augPortable?.due_date).toBe("2025-09-02");
+    expect(octSchool?.bill_prepared_date).toBe("2025-10-08");
+    expect(octSchool?.due_date).toBe("2025-10-30");
+    const items = JSON.parse(augPortable?.line_items_json ?? "[]") as { label: string; amount_usd: string }[];
+    expect(items.some((item) => item.label.startsWith("Energy Charge") && item.amount_usd === "126.30")).toBe(true);
+
+    const outcome = parseDocument(text, "rmp-terra-sideways.pdf");
+    expect(outcome.rows).toHaveLength(4);
+    expect(outcome.rows.every((row) => row.status === "ok")).toBe(true);
+  });
+
+  it("OCRs the sideways multi-item scan into one row per meter and period", async () => {
+    const bytes = new Uint8Array(readFileSync(new URL("./fixtures/rmp-terra-sideways.pdf", import.meta.url)));
+    const text = await extractPdfText(bytes);
+    const outcome = parseDocument(text, "rmp-terra-sideways.pdf");
+    const rows = outcome.rows;
+    expect(rows.length).toBeGreaterThanOrEqual(16);
+    expect(rows.length).toBeLessThanOrEqual(24);
+    const meters = new Set(rows.map((row) => row.fields.meter_id));
+    expect(meters.has("348204387")).toBe(true);
+    expect(meters.has("348204388")).toBe(true);
+    expect([...meters].every((meter) => meter === "348204387" || meter === "348204388")).toBe(true);
+
+    const august = rows.filter((row) => row.fields.billing_period_start === "2025-07-08");
+    expect(august.map((row) => row.fields.meter_id).sort()).toEqual(["348204387", "348204388"]);
+    const portable = august.find((row) => row.fields.meter_id === "348204387");
+    const school = august.find((row) => row.fields.meter_id === "348204388");
+    expect(portable?.status).toBe("ok");
+    expect(portable?.fields.billing_period_end).toBe("2025-08-07");
+    expect(portable?.fields.kwh_total).toBe("1040");
+    expect(portable?.fields.demand_kw_max).toBe("4");
+    expect(portable?.fields.rate_schedule).toBe("23");
+    expect(portable?.fields.customer_account).toBe("41652777-0018");
+    expect(school?.status).toBe("ok");
+    expect(school?.fields.billing_period_end).toBe("2025-08-07");
+    expect(school?.fields.kwh_total).toBe("27760");
+    expect(school?.fields.demand_kw_max).toBe("81");
+    expect(school?.fields.rate_schedule).toBe("6");
+    expect(school?.fields.kwh_on_peak).toBe("");
+    expect(school?.fields.amount_due_usd).not.toBe(portable?.fields.amount_due_usd);
+    expect(Number(school?.fields.amount_due_usd)).toBeGreaterThan(Number(portable?.fields.amount_due_usd));
+    const keys = rows.map((row) => `${row.fields.meter_id}|${row.fields.billing_period_start}|${row.fields.billing_period_end}`);
+    expect(new Set(keys).size).toBe(keys.length);
+  }, 240_000);
 });
