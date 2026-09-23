@@ -15,6 +15,7 @@ const MONTH_TYPO: Record<string, string> = {
   fep: "Feb",
   fev: "Feb",
   war: "Mar",
+  qct: "Oct",
 };
 
 const MONTHS: Record<string, string> = {
@@ -179,6 +180,21 @@ function normalizeAccount(raw: string): string {
   return raw.replace(/\s+/g, "");
 }
 
+const NAME_BANNED = new Set(
+  "ROCKY POWER CHARGE CHARGES MOUNTAIN ELECTRIC SERVICE SCHEDULE ACCOUNT BILLING AMOUNT PAYMENT BALANCE PACIFICORP METER DEMAND ENERGY TOTAL NEW HISTORICAL DETAILED ITEM PAGE QUESTIONS BUSINESS SOLUTIONS TEAM INQUIRIES FIRST CLASS POSTAGE PAID US USA MAIL".split(
+    " ",
+  ),
+);
+
+function presortedName(text: string): string {
+  for (const match of text.matchAll(/\b([A-Z]{2,}(?:[ \t]+[A-Z]{2,}){0,5})[ \t]+PRESORTED\b/g)) {
+    const words = (match[1] ?? "").split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.some((word) => NAME_BANNED.has(word))) continue;
+    return words.join(" ");
+  }
+  return "";
+}
+
 function parseIdentity(text: string): Pick<
   BillDraft,
   "customer_name" | "customer_account" | "service_address" | "service_city" | "service_state" | "service_zip"
@@ -196,7 +212,7 @@ function parseIdentity(text: string): Pick<
   const zipNearService = highland
     ? /\bUT\s+(\d{5}(?:-\d{4})?)/i.exec(text.slice(highland.index ?? 0))?.[1]
     : undefined;
-  return {
+  const identity = {
     customer_name: (fromBlock ? (block?.[1] ?? "") : (rehab?.[1] ?? "")).trim(),
     customer_account: account ? normalizeAccount(account) : "",
     service_address: fromBlock ? (block?.[2] ?? "").trim() : highland ? `${highland[1]} S ${(highland[2] ?? "").toUpperCase()} DR` : "",
@@ -204,6 +220,26 @@ function parseIdentity(text: string): Pick<
     service_state: fromBlock ? (block?.[4] ?? "").trim() : highland ? "UT" : "",
     service_zip: fromBlock ? (block?.[5] ?? "").trim() : (zipNearService ?? ""),
   };
+  if (!identity.customer_name) identity.customer_name = presortedName(text);
+  if (!identity.service_address) {
+    const item = /ITEM\s+\d+\s*-\s*ELECTRIC SERVICE\s+(\d+\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,8})\s+([A-Za-z]+)\s+UT\b/i.exec(
+      text,
+    );
+    if (item?.[1] && item[2]) {
+      identity.service_address = item[1].toUpperCase();
+      identity.service_city = item[2].toUpperCase();
+      identity.service_state = "UT";
+    }
+  }
+  if (!identity.service_zip) {
+    const zip = /\b([A-Z][A-Z .'-]{2,}?)\s+UT\s+(\d{5}(?:-\d{4})?)\b/.exec(text);
+    if (zip?.[2]) {
+      if (!identity.service_city && zip[1]) identity.service_city = zip[1].trim();
+      identity.service_zip = zip[2];
+      if (!identity.service_state) identity.service_state = "UT";
+    }
+  }
+  return identity;
 }
 
 function categoryFor(label: string): ChargeCategory {
@@ -213,13 +249,27 @@ function categoryFor(label: string): ChargeCategory {
   return "fee";
 }
 
-function parseChargeLine(raw: string): ChargeLine | null {
-  const line = raw.replace(/\s+/g, " ").trim();
-  if (!line) return null;
+function chargeAmount(line: string): { text: string; index: number } | null {
+  const rate = /-?[\d,]+\.\d{4,}/.exec(line);
+  if (rate && rate.index !== undefined) {
+    const after = line.slice(rate.index + rate[0].length);
+    const next = /-?[\d,]+\.\d{2}(?!\d)/.exec(after);
+    if (next && next.index !== undefined) {
+      return { text: next[0], index: rate.index + rate[0].length + next.index };
+    }
+  }
   const amounts = [...line.matchAll(/-?[\d,]+\.\d{2}(?!\d)/g)];
   if (amounts.length !== 1) return null;
   const amount = amounts[0];
   if (!amount || amount.index === undefined) return null;
+  return { text: amount[0], index: amount.index };
+}
+
+function parseChargeLine(raw: string): ChargeLine | null {
+  const line = raw.replace(/\s+/g, " ").trim();
+  if (!line) return null;
+  const amount = chargeAmount(line);
+  if (!amount) return null;
   const hasUnit = /\b(?:kwh|kw|kvarh|lamps|units)\b/i.test(line);
   const hasRate = /-?[\d,]+\.\d{3,}/.test(line);
   const named =
@@ -235,7 +285,7 @@ function parseChargeLine(raw: string): ChargeLine | null {
   if (!/^[A-Za-z]/.test(label)) return null;
   return {
     label,
-    amount_usd: money(amount[0]),
+    amount_usd: money(amount.text),
     category: categoryFor(label),
   };
 }
@@ -301,7 +351,92 @@ function statementDate(before: string, after: string, pattern: RegExp): string {
   return longToIso(match?.[1] ?? "");
 }
 
-function parsePeriod(text: string, hit: UsageHit, sourceFile: string, multi: boolean, identity: ReturnType<typeof parseIdentity>): BillDraft {
+interface ChargeChoice {
+  cents: number | null;
+  items: ChargeLine[];
+  note: string;
+}
+
+function pageBounds(text: string, hit: UsageHit): { start: number; end: number } {
+  const prev = text.lastIndexOf(PAGE_MARK, hit.index);
+  const start = prev === -1 ? 0 : prev + PAGE_MARK.length;
+  const next = text.indexOf(PAGE_MARK, hit.end);
+  return { start, end: next === -1 ? text.length : next };
+}
+
+function accountCents(before: string): number | null {
+  const raw = lastGroup(NEW_CHARGES, before);
+  if (!raw) return null;
+  return toCents(money(raw));
+}
+
+function lineCents(items: readonly ChargeLine[]): number | null {
+  if (items.length === 0) return null;
+  return items.reduce((total, item) => total + toCents(item.amount_usd), 0);
+}
+
+/**
+ * One kWh meter keeps the statement New Charges total. When several meters share
+ * a period, each row gets that item's own charge lines. A meter whose page only
+ * has the account total keeps account New Charges minus the other meters, so the
+ * rows add up to the statement and the full total is not copied onto every meter.
+ */
+function chargeChoices(text: string, hits: UsageHit[]): ChargeChoice[] {
+  const bounds = hits.map((hit) => pageBounds(text, hit));
+  const itemLines = hits.map((hit, index) => {
+    const end = bounds[index]?.end ?? text.length;
+    const next = hits.find((other) => other.index > hit.end && other.index < end);
+    return chargeLines(text.slice(hit.end, next ? next.index : end));
+  });
+  const ownCents = itemLines.map((items) => lineCents(items));
+  const summary = hits.map((hit, index) => accountCents(text.slice(bounds[index]?.start ?? 0, hit.index)));
+  const groups = new Map<string, number[]>();
+  hits.forEach((hit, index) => {
+    const key = `${hit.startLabel}|${hit.endLabel}`;
+    const list = groups.get(key) ?? [];
+    list.push(index);
+    groups.set(key, list);
+  });
+  return hits.map((hit, index) => {
+    const group = groups.get(`${hit.startLabel}|${hit.endLabel}`) ?? [index];
+    if (group.length < 2) {
+      const after = text.slice(hit.end, bounds[index]?.end ?? text.length);
+      return { cents: summary[index] ?? null, items: chargeLines(after), note: "" };
+    }
+    const own = ownCents[index];
+    if (own != null && own !== 0) {
+      return { cents: own, items: itemLines[index] ?? [], note: "multi-meter statement; charges are this item's lines" };
+    }
+    const siblingSum = group.filter((other) => other !== index).reduce((total, other) => total + (ownCents[other] ?? 0), 0);
+    const siblingHasLines = group.some((other) => other !== index && ownCents[other] != null && ownCents[other] !== 0);
+    const account = summary[index];
+    if (account != null && siblingHasLines && siblingSum < account) {
+      const remainder = account - siblingSum;
+      return {
+        cents: remainder === 0 ? null : remainder,
+        items: itemLines[index] ?? [],
+        note: "multi-meter statement; charges are account new charges minus the other meters on this period",
+      };
+    }
+    if (account != null && account !== 0 && !siblingHasLines) {
+      return {
+        cents: account,
+        items: itemLines[index] ?? [],
+        note: "multi-meter statement; charges are this page's new charges",
+      };
+    }
+    return { cents: null, items: itemLines[index] ?? [], note: "multi-meter statement; missing new charges" };
+  });
+}
+
+function parsePeriod(
+  text: string,
+  hit: UsageHit,
+  sourceFile: string,
+  multi: boolean,
+  identity: ReturnType<typeof parseIdentity>,
+  choice: ChargeChoice,
+): BillDraft {
   const row = emptyBill(sourceFile);
   const notes: string[] = [];
   row.utility = "Rocky Mountain Power";
@@ -328,16 +463,17 @@ function parsePeriod(text: string, hit: UsageHit, sourceFile: string, multi: boo
 
   // Period cost is New Charges. An Equal Payment Plan "Amount Due" is the installment, not usage cost.
   // Current Account Balance includes past due and is not the period total.
-  const charges = money(lastGroup(NEW_CHARGES, before));
+  const charges = choice.cents == null ? "" : fromCents(choice.cents);
   row.total_new_charges_usd = charges;
   row.amount_due_usd = charges;
-  applyCharges(row, chargeLines(after));
+  applyCharges(row, choice.items);
 
   if (!row.demand_kw_max) notes.push("missing demand kw");
   if (!charges) notes.push("missing new charges");
   if (/equal payment plan|payment plan amount/i.test(before)) {
     notes.push("equal payment plan; period cost is New Charges, not the installment amount due");
   }
+  if (choice.note) notes.push(choice.note);
   if (multi) notes.push("multi-statement pdf; row is this service period only");
   notes.push("non-TOU; usage in kwh_total");
 
@@ -358,11 +494,13 @@ export function parseRockyMountainBills(text: string, sourceFile: string): BillD
   const hits = usageHits(source);
   const identity = parseIdentity(source);
   const multi = hits.length > 1;
-  const rows = hits.map((hit) => parsePeriod(source, hit, sourceFile, multi, identity));
+  const choices = chargeChoices(source, hits);
+  const rows = hits.map((hit, index) => parsePeriod(source, hit, sourceFile, multi, identity, choices[index] ?? { cents: null, items: [], note: "" }));
   return rows.sort(
     (a, b) =>
       a.billing_period_start.localeCompare(b.billing_period_start) ||
-      a.billing_period_end.localeCompare(b.billing_period_end),
+      a.billing_period_end.localeCompare(b.billing_period_end) ||
+      a.meter_id.localeCompare(b.meter_id),
   );
 }
 

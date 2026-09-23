@@ -36,7 +36,7 @@ export async function extractPdfText(data: Uint8Array, password?: string, option
     const { text } = await extractText(pdf, { mergePages: true });
     const joined = Array.isArray(text) ? text.join("\n") : text;
     if (!textLayerIsEmpty(joined)) return joined;
-    return ocrPdfDocument(pdf, options?.ai);
+    return ocrPdfDocument(pdf, options?.ai, data);
   } catch (error) {
     const code = passwordCode(error);
     if (code === INCORRECT_PASSWORD) throw new PdfPasswordError("incorrect");
