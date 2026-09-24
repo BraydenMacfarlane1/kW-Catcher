@@ -14,6 +14,7 @@ import { missingMonths } from "./gaps";
 import { isId, isMeterId } from "./ids";
 import { ingestPdf, reparseStoredBills, type IngestResult } from "./ingest";
 import { page, renderBanner, renderHome, renderSite } from "./pages";
+import { deleteSiteCascade } from "./site-delete";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -43,8 +44,7 @@ app.get("/", async (c) => {
       }
       return { site, meters: siteMeters.length, bills: siteBills.length, gaps };
     });
-    const banner = renderBanner(c.req.query("notice") ?? null, queryCounts(c));
-    return c.html(renderHome(entries, banner));
+    return c.html(renderHome(entries, pageBanner(c)));
   } catch (error) {
     if (isMissingTable(error)) {
       return c.html(renderHome([], renderBanner("setup", {})));
@@ -72,9 +72,24 @@ app.get("/sites/:id", async (c) => {
       site,
       meters,
       bills,
-      banner: renderBanner(c.req.query("notice") ?? null, queryCounts(c)),
+      banner: pageBanner(c),
     }),
   );
+});
+
+app.post("/sites/:id/delete", async (c) => {
+  const id = c.req.param("id");
+  if (!isId(id)) return c.notFound();
+  const site = await getSite(c.env.DB, id);
+  if (!site) return c.notFound();
+  const body = await c.req.parseBody();
+  const confirmName = typeof body.confirm_name === "string" ? body.confirm_name.trim() : "";
+  if (!confirmName || confirmName !== site.name) {
+    return c.redirect(`/sites/${id}?notice=confirm`, 303);
+  }
+  await deleteSiteCascade(c.env, id);
+  const params = new URLSearchParams({ notice: "deleted", name: site.name });
+  return c.redirect(`/?${params.toString()}`, 303);
 });
 
 app.post("/sites/:id/upload", async (c) => {
@@ -150,6 +165,12 @@ async function optionalFormPassword(request: Request): Promise<string | undefine
   const type = request.headers.get("content-type") ?? "";
   if (!type.includes("application/x-www-form-urlencoded") && !type.includes("multipart/form-data")) return undefined;
   return formPassword(await request.formData());
+}
+
+function pageBanner(c: { req: { query: (name: string) => string | undefined } }): string {
+  const notice = c.req.query("notice") ?? null;
+  const detail = notice === "deleted" ? (c.req.query("name") ?? "") : "";
+  return renderBanner(notice, queryCounts(c), detail);
 }
 
 function queryCounts(c: { req: { query: (name: string) => string | undefined } }): Record<string, string> {
