@@ -9,6 +9,11 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  // Paid-plan maximum. The default 30s CPU limit killed Terra Academy OCR
+  // (exceededCpu at 32500 ms on POST /api/v1/sites/:siteId/bills).
+  "limits": {
+    "cpu_ms": 300000
+  },
   "ai": {
     "binding": "AI"
   },

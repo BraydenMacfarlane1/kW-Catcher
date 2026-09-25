@@ -1,3 +1,4 @@
+import { CpuBudgetError, type OcrCpuClock } from "./budget";
 import { deleteOtherR2Bills, ensureMeter, saveBill } from "./db";
 import type { BillVision } from "./ocr";
 import { extractPdfText, PdfPasswordError } from "./pdf";
@@ -21,6 +22,8 @@ export interface IngestOptions {
    * so a later re-parse has to be given the password again.
    */
   password?: string;
+  /** One clock for every file in the HTTP request. */
+  cpuClock?: OcrCpuClock;
 }
 
 export async function ingestPdf(
@@ -57,9 +60,19 @@ export async function ingestPdf(
 
   let outcome = parseDocument("", sourceFile);
   try {
-    const text = await extractPdfText(bytes, options.password, { ai: visionBinding(env) });
+    const text = await extractPdfText(bytes, options.password, { ai: visionBinding(env), cpuClock: options.cpuClock });
     outcome = parseDocument(text, sourceFile);
   } catch (error) {
+    if (error instanceof CpuBudgetError) {
+      if (!existingR2Key) {
+        try {
+          await env.BILLS.delete(r2Key);
+        } catch {
+          /* the client still needs the budget error */
+        }
+      }
+      throw error;
+    }
     if (error instanceof PdfPasswordError) {
       if (existingR2Key) {
         await env.DB.prepare(
@@ -117,7 +130,12 @@ export async function ingestPdf(
   return results;
 }
 
-export async function reparseStoredBills(env: Env, siteId: string, password?: string): Promise<IngestResult[]> {
+export async function reparseStoredBills(
+  env: Env,
+  siteId: string,
+  password?: string,
+  cpuClock?: OcrCpuClock,
+): Promise<IngestResult[]> {
   const stored = await env.DB.prepare(
     `SELECT r2_key, MIN(source_file) AS source_file
      FROM bills
@@ -129,6 +147,7 @@ export async function reparseStoredBills(env: Env, siteId: string, password?: st
 
   const results: IngestResult[] = [];
   for (const bill of stored.results) {
+    cpuClock?.assert();
     const object = await env.BILLS.get(bill.r2_key);
     if (!object) {
       results.push({
@@ -141,7 +160,7 @@ export async function reparseStoredBills(env: Env, siteId: string, password?: st
     }
     const bytes = new Uint8Array(await object.arrayBuffer());
     const file = new File([bytes], bill.source_file || "bill.pdf", { type: "application/pdf" });
-    const parsed = await ingestPdf(env, siteId, file, { existingR2Key: bill.r2_key, password });
+    const parsed = await ingestPdf(env, siteId, file, { existingR2Key: bill.r2_key, password, cpuClock });
     results.push(...parsed);
   }
   return results;

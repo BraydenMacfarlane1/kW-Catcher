@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
 import { extractImages, getDocumentProxy } from "unpdf";
 import { PNG } from "pngjs";
+import { CpuBudgetError, type OcrCpuClock } from "./budget";
 import { openFax, type FaxBook } from "./fax";
 import { orientationOf, rotateRgba, type QuarterTurn, type Rgba } from "./orient";
 
@@ -29,6 +30,7 @@ interface PageImage {
 interface TessApi {
   Init(datapath: string | null, language: string, oem: number): number;
   SetPageSegMode(mode: number): void;
+  SetImage(data: number, width: number, height: number, bpp: number, stride: number): void;
   SetImageFile(): number;
   Recognize(monitor: null): boolean;
   GetUTF8Text(): string;
@@ -40,6 +42,15 @@ interface TessModule {
     writeFile(path: string, data: Uint8Array | string): void;
   };
   TessBaseAPI: new () => TessApi;
+  _malloc(size: number): number;
+  _free(ptr: number): void;
+  HEAPU8: Uint8Array;
+}
+
+interface OcrEngine {
+  /** Grayscale bytes from an RGBA image. Same pixels Tesseract reads from an RGBA PNG of that image. */
+  image(image: Rgba): Promise<string>;
+  png(png: Uint8Array): Promise<string>;
 }
 
 interface CoreOptions {
@@ -51,7 +62,7 @@ interface CoreOptions {
 
 type CoreFactory = (options?: CoreOptions) => Promise<TessModule>;
 
-let recognizerPromise: Promise<(png: Uint8Array) => Promise<string>> | undefined;
+let recognizerPromise: Promise<OcrEngine> | undefined;
 
 /** Letters below this count mean the PDF has no usable text layer. */
 export function textLayerIsEmpty(text: string): boolean {
@@ -59,11 +70,12 @@ export function textLayerIsEmpty(text: string): boolean {
   return (letters?.length ?? 0) < 40;
 }
 
-export async function ocrPdfDocument(pdf: OpenPdf, ai?: BillVision, bytes?: Uint8Array): Promise<string> {
+export async function ocrPdfDocument(pdf: OpenPdf, ai?: BillVision, bytes?: Uint8Array, cpuClock?: OcrCpuClock): Promise<string> {
   const fax = bytes ? openFax(bytes) : null;
   const parts: string[] = [];
   for (let page = 1; page <= pdf.numPages; page += 1) {
-    parts.push(await ocrPage(pdf, page, ai, fax));
+    cpuClock?.assert();
+    parts.push(await ocrPage(pdf, page, ai, fax, cpuClock));
   }
   return parts.join(PAGE_BREAK);
 }
@@ -80,20 +92,50 @@ export async function embeddedPageQuarterTurn(data: Uint8Array, page: number): P
   return "turn" in decision ? decision.turn : null;
 }
 
-async function ocrPage(pdf: OpenPdf, page: number, ai: BillVision | undefined, fax: FaxBook | null): Promise<string> {
-  const raster = fax?.pageImage(page - 1) ?? (await embeddedRaster(pdf, page));
-  if (!raster) return "";
-  const png = rgbaToPng(await orientRaster(raster));
-  if (ai) {
-    const transcribed = await transcribeWithVision(ai, png);
-    if (!textLayerIsEmpty(transcribed) && /\b(?:kwh|account|schedule)\b/i.test(transcribed)) return transcribed;
-  }
+async function ocrPage(
+  pdf: OpenPdf,
+  page: number,
+  ai: BillVision | undefined,
+  fax: FaxBook | null,
+  cpuClock: OcrCpuClock | undefined,
+): Promise<string> {
+  let cpu = 0;
+  let cursor = performance.now();
+  let running = true;
+  const pause = (): void => {
+    if (!running) return;
+    cpu += performance.now() - cursor;
+    running = false;
+  };
+  const resume = (): void => {
+    cursor = performance.now();
+    running = true;
+  };
+
   try {
-    const recognize = await localRecognizer();
-    return await recognize(png);
+    const mask = fax?.pageImage(page - 1) ?? null;
+    const raster = mask ?? (await embeddedRaster(pdf, page));
+    if (!raster) return "";
+    const oriented = await orientRaster(raster);
+    if (ai) {
+      const preview = rgbaToPng(downscaleRgba(oriented, 1200));
+      pause();
+      const transcribed = await transcribeWithVision(ai, preview);
+      if (!textLayerIsEmpty(transcribed) && /\b(?:kwh|account|schedule)\b/i.test(transcribed)) return transcribed;
+      resume();
+    }
+    // Fax masks are already grayscale. Skip the full-page PNG: pngjs deflate was
+    // several seconds per Terra file, and Tesseract then decoded that PNG.
+    // Photo scans stay on the PNG path so their pixels match the previous build.
+    const engine = await localRecognizer();
+    return mask ? await engine.image(oriented) : await engine.png(rgbaToPng(oriented));
   } catch (error) {
+    if (error instanceof CpuBudgetError) throw error;
     console.error("ocr failed", error instanceof Error ? error.stack ?? error.message : error);
     return "";
+  } finally {
+    pause();
+    cpuClock?.add(cpu);
   }
 }
 
@@ -149,7 +191,7 @@ async function probeQuarterTurn(image: Rgba): Promise<QuarterTurn> {
   let best: QuarterTurn = 90;
   let bestScore = -1;
   for (const turn of [90, 270] as const) {
-    const text = await recognize(downscalePng(rgbaToPng(rotateRgba(image, turn)), 900));
+    const text = await recognize.png(downscalePng(rgbaToPng(rotateRgba(image, turn)), 900));
     const score = dictionaryScore(text);
     if (score > bestScore) {
       best = turn;
@@ -200,11 +242,10 @@ function rgbaToPng(image: Rgba): Uint8Array {
 
 async function transcribeWithVision(ai: BillVision, png: Uint8Array): Promise<string> {
   try {
-    const small = downscalePng(png, 1200);
     const result = await ai.run(VISION_MODEL, {
       prompt:
         "Transcribe this scanned utility bill into plain text. Keep account numbers, dates, meter readings, kWh, kW, schedule, and New Charges on their own lines. Do not summarize or invent values.",
-      image: Buffer.from(small).toString("base64"),
+      image: Buffer.from(png).toString("base64"),
       max_tokens: 2500,
     });
     return visionText(result);
@@ -221,26 +262,33 @@ function visionText(result: unknown): string {
   return "";
 }
 
+function downscaleRgba(image: Rgba, maxWidth: number): Rgba {
+  if (image.width <= maxWidth) return image;
+  const scale = maxWidth / image.width;
+  const width = maxWidth;
+  const height = Math.max(1, Math.round(image.height * scale));
+  const data = new Uint8Array(width * height * 4);
+  const src = image.data;
+  for (let y = 0; y < height; y += 1) {
+    const sourceY = Math.min(image.height - 1, Math.floor(y / scale));
+    const row = sourceY * image.width;
+    for (let x = 0; x < width; x += 1) {
+      const sourceX = Math.min(image.width - 1, Math.floor(x / scale));
+      const from = (row + sourceX) * 4;
+      const to = (y * width + x) * 4;
+      data[to] = src[from] ?? 0;
+      data[to + 1] = src[from + 1] ?? 0;
+      data[to + 2] = src[from + 2] ?? 0;
+      data[to + 3] = 255;
+    }
+  }
+  return { width, height, data };
+}
+
 function downscalePng(png: Uint8Array, maxWidth: number): Uint8Array {
   const src = PNG.sync.read(Buffer.from(png));
   if (src.width <= maxWidth) return png;
-  const scale = maxWidth / src.width;
-  const width = maxWidth;
-  const height = Math.max(1, Math.round(src.height * scale));
-  const dst = new PNG({ width, height });
-  for (let y = 0; y < height; y += 1) {
-    const sourceY = Math.min(src.height - 1, Math.floor(y / scale));
-    for (let x = 0; x < width; x += 1) {
-      const sourceX = Math.min(src.width - 1, Math.floor(x / scale));
-      const from = (sourceY * src.width + sourceX) * 4;
-      const to = (y * width + x) * 4;
-      dst.data[to] = src.data[from] ?? 0;
-      dst.data[to + 1] = src.data[from + 1] ?? 0;
-      dst.data[to + 2] = src.data[from + 2] ?? 0;
-      dst.data[to + 3] = 255;
-    }
-  }
-  return PNG.sync.write(dst);
+  return rgbaToPng(downscaleRgba({ width: src.width, height: src.height, data: src.data }, maxWidth));
 }
 
 /**
@@ -248,7 +296,7 @@ function downscalePng(png: Uint8Array, maxWidth: number): Uint8Array {
  * so this loads tesseract.js-core in the same isolate. SIMD is preferred. wasm and eng.traineddata
  * come from node_modules when that directory is readable, otherwise from jsDelivr.
  */
-function localRecognizer(): Promise<(png: Uint8Array) => Promise<string>> {
+function localRecognizer(): Promise<OcrEngine> {
   recognizerPromise ??= startRecognizer().catch((error: unknown) => {
     recognizerPromise = undefined;
     throw error;
@@ -256,16 +304,14 @@ function localRecognizer(): Promise<(png: Uint8Array) => Promise<string>> {
   return recognizerPromise;
 }
 
-async function startRecognizer(): Promise<(png: Uint8Array) => Promise<string>> {
+async function startRecognizer(): Promise<OcrEngine> {
   const simd = await wasmSimd();
   let engine = await startCore(simd);
   if (!engine && simd) engine = await startCore(false);
   if (!engine) throw new Error("tesseract core failed to start");
   const { api, mod } = engine;
-  return async (png: Uint8Array) => {
+  const finish = (): string => {
     try {
-      mod.FS.writeFile("/input", png);
-      if (api.SetImageFile() === 1) return "";
       api.Recognize(null);
       return api.GetUTF8Text() ?? "";
     } finally {
@@ -275,6 +321,27 @@ async function startRecognizer(): Promise<(png: Uint8Array) => Promise<string>> 
         /* the next page still attempts recognition */
       }
     }
+  };
+  return {
+    async image(image: Rgba): Promise<string> {
+      const gray = new Uint8Array(image.width * image.height);
+      const src = image.data;
+      for (let i = 0, pixel = 0; i < gray.length; i += 1, pixel += 4) gray[i] = src[pixel] ?? 0;
+      const ptr = mod._malloc(gray.byteLength);
+      if (ptr === 0) throw new Error("ocr image allocation failed");
+      try {
+        mod.HEAPU8.set(gray, ptr);
+        api.SetImage(ptr, image.width, image.height, 1, image.width);
+      } finally {
+        mod._free(ptr);
+      }
+      return finish();
+    },
+    async png(png: Uint8Array): Promise<string> {
+      mod.FS.writeFile("/input", png);
+      if (api.SetImageFile() === 1) return "";
+      return finish();
+    },
   };
 }
 

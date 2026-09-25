@@ -1,4 +1,5 @@
 import { extractText, getDocumentProxy } from "unpdf";
+import type { OcrCpuClock } from "./budget";
 import { ocrPdfDocument, textLayerIsEmpty, type BillVision } from "./ocr";
 
 /** pdf.js PasswordResponses: 1 = password required, 2 = password rejected. */
@@ -25,6 +26,8 @@ export interface ExtractOptions {
    * A thin or failed transcription falls back to in-process tesseract.js-core. Text-layer PDFs never call it.
    */
   ai?: BillVision;
+  /** Shared by every scanned page in one HTTP request. Text-layer PDFs do not charge it. */
+  cpuClock?: OcrCpuClock;
 }
 
 export async function extractPdfText(data: Uint8Array, password?: string, options?: ExtractOptions): Promise<string> {
@@ -36,7 +39,8 @@ export async function extractPdfText(data: Uint8Array, password?: string, option
     const { text } = await extractText(pdf, { mergePages: true });
     const joined = Array.isArray(text) ? text.join("\n") : text;
     if (!textLayerIsEmpty(joined)) return joined;
-    return ocrPdfDocument(pdf, options?.ai, data);
+    options?.cpuClock?.assert();
+    return ocrPdfDocument(pdf, options?.ai, data, options?.cpuClock);
   } catch (error) {
     const code = passwordCode(error);
     if (code === INCORRECT_PASSWORD) throw new PdfPasswordError("incorrect");

@@ -1,5 +1,6 @@
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
+import { OcrCpuClock } from "./budget";
 import {
   createSite,
   findSiteIdByName,
@@ -144,9 +145,11 @@ export function mountApi(app: Hono<{ Bindings: Env }>): void {
     const files = pdfFiles(form);
     if (files.length === 0) return c.json({ error: "no_files" }, 400);
     const password = pdfPassword(form);
+    const cpuClock = new OcrCpuClock();
     const results: IngestResult[] = [];
     for (const file of files.slice(0, MAX_UPLOAD_FILES)) {
-      results.push(...(await ingestPdf(c.env, siteId, file, { password })));
+      cpuClock.assert();
+      results.push(...(await ingestPdf(c.env, siteId, file, { password, cpuClock })));
     }
     for (const file of files.slice(MAX_UPLOAD_FILES)) {
       results.push({
