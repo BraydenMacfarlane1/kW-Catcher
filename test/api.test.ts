@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CpuBudgetError, OcrCpuClock } from "../src/budget";
 import app from "../src/index";
 import { CONTRACT_REQUIRED, csvExportColumns } from "../src/contract";
 import type { MeterRow, SiteRow } from "../src/db";
@@ -459,8 +460,26 @@ describe("write API", () => {
     expect(ingestPdf.mock.calls[0]?.[1]).toBe(site.id);
     expect(ingestPdf.mock.calls[0]?.[2]).toBeInstanceOf(File);
     expect((ingestPdf.mock.calls[0]?.[2] as File).name).toBe("bill1.pdf");
-    expect(ingestPdf.mock.calls[0]?.[3]).toEqual({ password: "secret" });
+    const firstOptions = ingestPdf.mock.calls[0]?.[3] as { password?: string; cpuClock?: OcrCpuClock };
+    const thirdOptions = ingestPdf.mock.calls[2]?.[3] as { cpuClock?: OcrCpuClock };
+    expect(firstOptions.password).toBe("secret");
+    expect(firstOptions.cpuClock).toBeInstanceOf(OcrCpuClock);
+    expect(thirdOptions.cpuClock).toBe(firstOptions.cpuClock);
     expect((ingestPdf.mock.calls[2]?.[2] as File).name).toBe("bill3.pdf");
+  });
+
+  it("returns JSON when OCR runs past the CPU budget", async () => {
+    ingestPdf.mockRejectedValue(new CpuBudgetError());
+    const form = new FormData();
+    form.append("pdf", pdfFile("bill.pdf"));
+    const res = await app.request(`/api/v1/sites/${site.id}/bills`, {
+      method: "POST",
+      headers: bearer(),
+      body: form,
+    }, env());
+    expect(res.status).toBe(503);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    expect(await res.json()).toEqual({ error: "cpu_budget" });
   });
 
   it("rejects files past the 25 file limit", async () => {

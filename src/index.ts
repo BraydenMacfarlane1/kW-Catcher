@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { mountApi } from "./api";
+import { CpuBudgetError, OcrCpuClock } from "./budget";
 import {
   createSite,
   getSite,
@@ -19,6 +20,11 @@ import { deleteSiteCascade } from "./site-delete";
 const app = new Hono<{ Bindings: Env }>();
 
 app.onError((error, c) => {
+  if (error instanceof CpuBudgetError) {
+    if (c.req.path.startsWith("/api/")) return c.json({ error: "cpu_budget" }, 503);
+    const site = /^\/sites\/([^/]+)/.exec(c.req.path);
+    if (site?.[1]) return c.redirect(`/sites/${site[1]}?notice=cpu_budget`, 303);
+  }
   console.error(JSON.stringify({ message: error.message }));
   if (c.req.path.startsWith("/api/")) return c.json({ error: "internal" }, 500);
   return c.html(page("Error", "<h1>Something went wrong.</h1><p><a href=\"/\">Back to sites</a></p>"), 500);
@@ -99,10 +105,12 @@ app.post("/sites/:id/upload", async (c) => {
   if (!site) return c.notFound();
   const form = await c.req.formData();
   const password = formPassword(form);
+  const cpuClock = new OcrCpuClock();
   const files = form.getAll("pdfs").filter((entry): entry is File => entry instanceof File && entry.size > 0);
   const results: IngestResult[] = [];
   for (const file of files.slice(0, 25)) {
-    results.push(...(await ingestPdf(c.env, id, file, { password })));
+    cpuClock.assert();
+    results.push(...(await ingestPdf(c.env, id, file, { password, cpuClock })));
   }
   for (const file of files.slice(25)) {
     results.push({ sourceFile: file.name || "bill.pdf", meterId: "", status: "rejected", detail: "limit 25 files" });
@@ -115,7 +123,7 @@ app.post("/sites/:id/reparse", async (c) => {
   if (!isId(id)) return c.notFound();
   const site = await getSite(c.env.DB, id);
   if (!site) return c.notFound();
-  const results = await reparseStoredBills(c.env, id, await optionalFormPassword(c.req.raw));
+  const results = await reparseStoredBills(c.env, id, await optionalFormPassword(c.req.raw), new OcrCpuClock());
   return c.redirect(resultLocation(id, "reparsed", results), 303);
 });
 

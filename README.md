@@ -106,6 +106,8 @@ A meter export with no rows is `404` `{ "error": "not_found" }`, matching the UI
 
 `status` is `ok`, `needs_parser`, `needs_password`, `failed`, or `rejected`. `detail` is omitted when empty. A request with no file is `400` `{ "error": "no_files" }`.
 
+Scanned bills are OCR'd inside the request. `wrangler.jsonc` sets `limits.cpu_ms` to `300000` (the Workers Paid maximum) so a multi-page scan is not cut off at the default 30 seconds. Between pages, OCR stops once it has used about 250 seconds and this route returns `503` `{ "error": "cpu_budget" }`. PDFs already stored earlier in that request stay stored. Waiting on Workers AI is not counted. Cloudflare still answers with its own non-JSON 503 if a single page crosses the platform CPU limit, because that kill does not return to user code. One Terra Academy-sized scan fits in the raised limit, so this does not add a queue. The importer contract stays one request that returns when parsing finishes.
+
 Sun Daddy flow: create a site (optional when the site already exists) → upload PDFs → poll `GET /api/v1/sites/:siteId` → `GET /api/v1/sites/:siteId/export.json`.
 
 ```bash

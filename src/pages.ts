@@ -214,6 +214,9 @@ export function renderBanner(notice: string | null, counts: Record<string, strin
       .join(", ");
     return `<p class="banner">${esc(label)} finished: ${esc(parts)}.</p>`;
   }
+  if (notice === "cpu_budget") {
+    return `<p class="banner warn">Parsing stopped because this upload used too much CPU time. Files already stored are kept. Try fewer PDFs.</p>`;
+  }
   if (notice === "setup") {
     return `<p class="banner warn">Database is not migrated. Run <code>npm run db:migrate:local</code> then reload.</p>`;
   }
