@@ -420,4 +420,89 @@ MILLCREEK UT 84106-3211
     const keys = rows.map((row) => `${row.fields.meter_id}|${row.fields.billing_period_start}|${row.fields.billing_period_end}`);
     expect(new Set(keys).size).toBe(keys.length);
   }, 240_000);
+
+  it("parses Schedule 6A on-peak and off-peak lines as one row per meter", () => {
+    const text = readFileSync(new URL("./fixtures/rmp-ifly-6a-unpdf.txt", import.meta.url), "utf8");
+    const expected = readFileSync(new URL("./fixtures/rmp-ifly-6a-expected.tsv", import.meta.url), "utf8")
+      .trim()
+      .split("\n")
+      .slice(1)
+      .map((line) => line.split("\t"));
+    const rows = parseRockyMountainBills(text, "rmp-ifly-6a.txt");
+    expect(rows).toHaveLength(expected.length);
+    expect(expected).toHaveLength(24);
+
+    for (const [index, cols] of expected.entries()) {
+      const row = rows[index];
+      const start = longToIso(cols[3] ?? "");
+      expect(row?.meter_id, start).toBe(cols[0]);
+      expect(row?.rate_schedule, start).toBe(cols[2]);
+      expect(row?.billing_period_start, start).toBe(start);
+      expect(row?.billing_period_end, start).toBe(longToIso(cols[4] ?? ""));
+      expect(row?.billing_days, start).toBe(cols[5]);
+      expect(row?.kwh_on_peak, start).toBe(cols[7]);
+      expect(row?.kwh_off_peak, start).toBe(cols[8]);
+      expect(row?.kwh_total, start).toBe(cols[9]);
+      expect(row?.demand_kw_on_peak, start).toBe(cols[10]);
+      expect(row?.demand_kw_off_peak, start).toBe(cols[11]);
+      expect(row?.demand_kw_max, start).toBe(cols[12]);
+      expect(row?.total_new_charges_usd, start).toBe(cols[13]);
+      expect(row?.amount_due_usd, start).toBe(cols[13]);
+      expect(row?.bill_prepared_date, start).toBe(cols[14]);
+      expect(row?.due_date, start).toBe(cols[15]);
+      expect(row?.utility).toBe("Rocky Mountain Power");
+      expect(row?.customer_name).toBe("TOTAL FITNESS CENTER");
+      expect(row?.customer_account).toBe("90000001-0011");
+      expect(row?.kwh_mid_peak).toBe("");
+      expect(row?.kwh_super_off_peak).toBe("");
+      expect(row?.notes).toContain("time-of-day");
+      expect(row?.notes).not.toContain("non-TOU");
+      expect(Number(row?.kwh_on_peak) + Number(row?.kwh_off_peak)).toBe(Number(row?.kwh_total));
+      expect(row?.demand_kw_max).toBe(String(Math.max(Number(row?.demand_kw_on_peak), Number(row?.demand_kw_off_peak))));
+      if (cols[0] === "348223920") {
+        expect(row?.service_address).toBe("338 23RD ST");
+      } else {
+        expect(row?.service_address).toBe("2261 KIESEL AVE STE 210");
+      }
+      expect(row?.service_city).toBe("OGDEN");
+    }
+
+    const october = rows.filter((row) => row.bill_prepared_date === "2025-10-27");
+    expect(october).toHaveLength(2);
+    expect(october.map((row) => row.billing_period_start)).toEqual(["2025-09-24", "2025-09-24"]);
+    expect(october[0]?.notes).toContain("statement also bills 09/25 charges 9,040.17 with no meter reads");
+    expect(october[1]?.notes).toContain("statement also bills 09/25 charges 17,055.05 with no meter reads");
+    expect(rows.filter((row) => row.notes.includes("09/25"))).toHaveLength(2);
+    expect(rows.some((row) => row.billing_period_end.startsWith("2025-09"))).toBe(false);
+
+    const statementTotals = new Map<string, number>();
+    for (const match of text.matchAll(/New Charges\s+\+([\d,]+\.\d{2})/g)) {
+      const prior = text.slice(0, match.index ?? 0);
+      const billed = [...prior.matchAll(/BILLING DATE:\s*([A-Za-z]+ \d{1,2}, \d{4})/g)].at(-1)?.[1] ?? "";
+      statementTotals.set(longToIso(billed), chargeCents((match[1] ?? "").replaceAll(",", "")));
+    }
+    const byBill = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = byBill.get(row.bill_prepared_date) ?? [];
+      list.push(row);
+      byBill.set(row.bill_prepared_date, list);
+    }
+    expect([...byBill.keys()].sort()).toEqual([...statementTotals.keys()].sort());
+    for (const [billed, group] of byBill) {
+      const itemCents = group.reduce((total, row) => total + chargeCents(row.total_new_charges_usd), 0);
+      const extraCents = group.reduce((total, row) => {
+        const extras = [...row.notes.matchAll(/statement also bills \d{2}\/\d{2} charges ([\d,]+\.\d{2})/g)];
+        return total + extras.reduce((sum, extra) => sum + chargeCents((extra[1] ?? "").replaceAll(",", "")), 0);
+      }, 0);
+      expect(itemCents + extraCents, billed).toBe(statementTotals.get(billed));
+    }
+
+    const january = rows.filter((row) => row.bill_prepared_date === "2026-01-28");
+    expect(january.reduce((total, row) => total + chargeCents(row.total_new_charges_usd), 0)).toBe(chargeCents("26514.74"));
+
+    const outcome = parseDocument(text, "rmp-ifly-6a.txt");
+    expect(outcome.rows).toHaveLength(24);
+    expect(outcome.rows.every((row) => row.status === "ok")).toBe(true);
+    expect(outcome.rows.map((row) => row.fields.customer_account)).toEqual(Array.from({ length: 24 }, () => "90000001-0011"));
+  });
 });

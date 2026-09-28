@@ -41,6 +41,9 @@ interface UsageHit {
   kwh: string;
   index: number;
   end: number;
+  /** Set together when on-peak and off-peak lines are one meter period. */
+  kwhOn: string;
+  kwhOff: string;
 }
 
 function normalizeText(text: string): string {
@@ -120,14 +123,14 @@ function kwhAmount(raw: string): string {
   return plainNumber(token);
 }
 
-function parseUsageLine(line: string): Omit<UsageHit, "index" | "end"> | null {
+function parseUsageLine(line: string): (Omit<UsageHit, "index" | "end"> & { bucket: "" | "on" | "off" }) | null {
   if (!/kwh/i.test(line)) return null;
   if (/\benergy charge\b/i.test(line) || /\bkvarh\b/i.test(line)) return null;
   const meter = /\b(\d{6,12})\b/.exec(line)?.[1];
   const dates = findDates(line);
   const start = dates[0];
   const end = dates[1];
-  const kwhMatch = /([\d,]+\.\d{3}|[\d,]+)\s*kwh/i.exec(line);
+  const kwhMatch = /([\d,]+\.\d{3}|[\d,]+)\s*(on|off)?kwh/i.exec(line);
   if (!meter || !start || !end || start.index === undefined || end.index === undefined || !kwhMatch || kwhMatch.index === undefined) {
     return null;
   }
@@ -137,12 +140,17 @@ function parseUsageLine(line: string): Omit<UsageHit, "index" | "end"> | null {
     .find((value) => value >= 1 && value <= 45);
   const startLabel = dateLabel(start);
   const endLabel = dateLabel(end);
+  const bucket = (kwhMatch[2] ?? "").toLowerCase();
+  const peak = bucket === "on" || bucket === "off" ? bucket : "";
   return {
     meter,
     startLabel,
     endLabel,
     days: printedDays ? String(printedDays) : elapsedDays(longToIso(startLabel), longToIso(endLabel)),
     kwh: kwhAmount(kwhMatch[1] ?? ""),
+    kwhOn: "",
+    kwhOff: "",
+    bucket: peak,
   };
 }
 
@@ -153,14 +161,63 @@ function lastGroup(pattern: RegExp, text: string): string {
 }
 
 function usageHits(text: string): UsageHit[] {
-  const hits: UsageHit[] = [];
+  const hits: (UsageHit & { bucket: "" | "on" | "off" })[] = [];
   let cursor = 0;
   for (const line of text.split("\n")) {
     const parsed = parseUsageLine(line);
     if (parsed) hits.push({ ...parsed, index: cursor, end: cursor + line.length });
     cursor += line.length + 1;
   }
-  return hits;
+  return mergeTouHits(hits);
+}
+
+/** On-peak and off-peak lines are one meter and one period, so charge slicing sees one row. */
+function mergeTouHits(hits: (UsageHit & { bucket: "" | "on" | "off" })[]): UsageHit[] {
+  const used = new Set<number>();
+  const merged: UsageHit[] = [];
+  for (let i = 0; i < hits.length; i++) {
+    if (used.has(i)) continue;
+    const hit = hits[i];
+    if (!hit || !hit.bucket) {
+      if (hit) merged.push(hit);
+      continue;
+    }
+    let pair = -1;
+    for (let j = i + 1; j < hits.length; j++) {
+      const other = hits[j];
+      if (!other) continue;
+      if (
+        other.bucket &&
+        other.bucket !== hit.bucket &&
+        other.meter === hit.meter &&
+        other.startLabel === hit.startLabel &&
+        other.endLabel === hit.endLabel
+      ) {
+        pair = j;
+        break;
+      }
+      if (other.meter === hit.meter && (other.startLabel !== hit.startLabel || other.endLabel !== hit.endLabel)) break;
+    }
+    used.add(i);
+    const other = pair >= 0 ? hits[pair] : undefined;
+    if (pair >= 0) used.add(pair);
+    const on = hit.bucket === "on" ? hit : other?.bucket === "on" ? other : undefined;
+    const off = hit.bucket === "off" ? hit : other?.bucket === "off" ? other : undefined;
+    const kwhOn = on?.kwh ?? "";
+    const kwhOff = off?.kwh ?? "";
+    merged.push({
+      meter: hit.meter,
+      startLabel: hit.startLabel,
+      endLabel: hit.endLabel,
+      days: (on ?? hit).days,
+      kwh: String(Number(kwhOn || "0") + Number(kwhOff || "0")),
+      index: other ? Math.min(hit.index, other.index) : hit.index,
+      end: other ? Math.max(hit.end, other.end) : hit.end,
+      kwhOn,
+      kwhOff,
+    });
+  }
+  return merged;
 }
 
 function demandKw(text: string, meter: string, endLabel: string): string {
@@ -174,6 +231,27 @@ function demandKw(text: string, meter: string, endLabel: string): string {
     if (kw) return plainNumber(kw);
   }
   return "";
+}
+
+/** Measured kW on `Demand … onkw` / `offkw` lines. Ignores Power Factor Adjustment lines. */
+function touDemand(text: string, meter: string, endLabel: string): { on: string; off: string; max: string } {
+  const wanted = endLabel.toLowerCase();
+  let on = "";
+  let off = "";
+  for (const line of text.split("\n")) {
+    if (!/\bdemand\b/i.test(line) || /\bdemand charge\b/i.test(line)) continue;
+    if ((/\b(\d{6,12})\b/.exec(line)?.[1] ?? "") !== meter) continue;
+    const date = findDates(line)[0];
+    if (!date || dateLabel(date).toLowerCase() !== wanted) continue;
+    const measured = /\b(\d{1,4})\s*(on|off)kw\b/i.exec(line);
+    if (!measured?.[1] || !measured[2]) continue;
+    const value = plainNumber(measured[1]);
+    if (measured[2].toLowerCase() === "on" && !on) on = value;
+    if (measured[2].toLowerCase() === "off" && !off) off = value;
+    if (on && off) break;
+  }
+  const nums = [on, off].filter(Boolean).map(Number).filter((value) => Number.isFinite(value));
+  return { on, off, max: nums.length ? String(Math.max(...nums)) : "" };
 }
 
 function normalizeAccount(raw: string): string {
@@ -203,7 +281,7 @@ function parseIdentity(text: string): Pick<
     /ACCOUNT NUMBER:\s*([\d-]+(?:[ \t]+\d+)?)/i.exec(text)?.[1] ??
     /Account #[ \t]*([\d \t-]+)/i.exec(text)?.[1];
   const block =
-    /(?:^|\n)([A-Z0-9][A-Z0-9 &',.-]{2,})\n+(\d+[^\n]+)\n+([A-Z][A-Z .'-]+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/.exec(
+    /(?:^|\n)([A-Z0-9][A-Z0-9 &',.-]{2,})(?:\n(?!\d)[A-Z0-9][A-Z0-9 &',.-]{2,})?\n+(\d+[^\n]+)\n+([A-Z][A-Z .'-]+?)\s+([A-Z]{2})\s+(\d{5}(?:-\d{4})?)/.exec(
       text,
     );
   const rehab = /\b((?:[A-Z][A-Z&'.-]*\s+){1,6}REHAB AND NURSING)\b/.exec(text);
@@ -290,13 +368,43 @@ function parseChargeLine(raw: string): ChargeLine | null {
   };
 }
 
-/** Charge lines under NEW CHARGES blocks that belong to this period, before the next bill's summary. */
-function chargeLines(afterUsage: string): ChargeLine[] {
+interface CollectedCharges {
+  items: ChargeLine[];
+  extraNote: string;
+  printedCents: number | null;
+}
+
+/**
+ * Charge lines under NEW CHARGES blocks that belong to this period, before the next bill's summary.
+ * A later block for a different month (no meter reads) is left out of the total and noted.
+ */
+function collectCharges(afterUsage: string): CollectedCharges {
   const nextSummary = /(?<!Total )New Charges[ \t]+\+?\$?[ \t]*[\d,]+\.\d{2}/i.exec(afterUsage);
   const region = nextSummary ? afterUsage.slice(0, nextSummary.index) : afterUsage;
+  const headers = [...region.matchAll(/NEW CHARGES[^\n]*/gi)];
   const parts = region.split(/NEW CHARGES[^\n]*/i).slice(1);
   const items: ChargeLine[] = [];
-  for (const part of parts) {
+  const extras: string[] = [];
+  let keptToken = "";
+  let printedCents: number | null = null;
+  for (let i = 0; i < parts.length; i++) {
+    const header = headers[i]?.[0] ?? "";
+    const token = /NEW CHARGES\s*-\s*(\d{2}\/\d{2})/i.exec(header)?.[1] ?? "";
+    const part = parts[i] ?? "";
+    if (token && keptToken && token !== keptToken) {
+      const total = /Total New Charges\s+(-?[\d,]+\.\d{2})/i.exec(part);
+      // The splitter also matches the "New Charges" inside "Total New Charges", so the amount
+      // can land on the next header instead of in this part.
+      const fromHeader = /^New Charges\s+(-?[\d,]+\.\d{2})/i.exec(headers[i + 1]?.[0] ?? "");
+      const amount = total?.[1] ?? fromHeader?.[1];
+      if (amount) extras.push(`statement also bills ${token} charges ${amount} with no meter reads`);
+      continue;
+    }
+    if (token && !keptToken) keptToken = token;
+    if (printedCents == null) {
+      const total = /Total New Charges\s+(-?[\d,]+\.\d{2})/i.exec(part);
+      if (total?.[1]) printedCents = toCents(money(total[1]));
+    }
     const totalAt = /Total New Charges/i.exec(part);
     const body = totalAt ? part.slice(0, totalAt.index) : part;
     for (const raw of body.split("\n")) {
@@ -304,7 +412,7 @@ function chargeLines(afterUsage: string): ChargeLine[] {
       if (item) items.push(item);
     }
   }
-  return items;
+  return { items, extraNote: extras.join("; "), printedCents };
 }
 
 function sumCategory(items: readonly ChargeLine[], category: ChargeCategory): number {
@@ -339,7 +447,20 @@ function statementWindow(text: string, hit: UsageHit): { before: string; after: 
 
 function rateSchedule(beforeUsage: string): string {
   const schedules = [...beforeUsage.matchAll(/Schedule[ \t]+(\d+[A-Za-z]?)/gi)];
-  return schedules.at(-1)?.[1] ?? "";
+  // Notices cite Schedule 92, 98, and 198. The item header is the service schedule.
+  const service = schedules.filter((match) => !/^(?:92|98|198)$/i.test(match[1] ?? ""));
+  return (service.at(-1) ?? schedules.at(-1))?.[1] ?? "";
+}
+
+function itemServiceAddress(beforeUsage: string): { address: string; city: string } | null {
+  const matches = [
+    ...beforeUsage.matchAll(
+      /ITEM\s+\d+\s*-\s*ELECTRIC SERVICE\s+(\d+\s+[A-Za-z0-9.'-]+(?:\s+[A-Za-z0-9.'-]+){0,8})\s+([A-Za-z]+)\s+UT\b/gi,
+    ),
+  ];
+  const item = matches.at(-1);
+  if (!item?.[1] || !item[2]) return null;
+  return { address: item[1].toUpperCase(), city: item[2].toUpperCase() };
 }
 
 function statementDate(before: string, after: string, pattern: RegExp): string {
@@ -381,14 +502,25 @@ function lineCents(items: readonly ChargeLine[]): number | null {
  * has the account total keeps account New Charges minus the other meters, so the
  * rows add up to the statement and the full total is not copied onto every meter.
  */
+function withExtra(note: string, extra: string): string {
+  return [note, extra].filter(Boolean).join("; ");
+}
+
 function chargeChoices(text: string, hits: UsageHit[]): ChargeChoice[] {
   const bounds = hits.map((hit) => pageBounds(text, hit));
-  const itemLines = hits.map((hit, index) => {
+  const itemRegions = hits.map((hit, index) => {
     const end = bounds[index]?.end ?? text.length;
     const next = hits.find((other) => other.index > hit.end && other.index < end);
-    return chargeLines(text.slice(hit.end, next ? next.index : end));
+    return text.slice(hit.end, next ? next.index : end);
   });
-  const ownCents = itemLines.map((items) => lineCents(items));
+  const collected = itemRegions.map((region) => collectCharges(region));
+  const itemLines = collected.map((entry) => entry.items);
+  const ownCents = hits.map((hit, index) => {
+    const summed = lineCents(itemLines[index] ?? []);
+    if (!(hit.kwhOn || hit.kwhOff)) return summed;
+    const printed = collected[index]?.printedCents;
+    return printed != null ? printed : summed;
+  });
   const summary = hits.map((hit, index) => accountCents(text.slice(bounds[index]?.start ?? 0, hit.index)));
   const groups = new Map<string, number[]>();
   hits.forEach((hit, index) => {
@@ -398,14 +530,20 @@ function chargeChoices(text: string, hits: UsageHit[]): ChargeChoice[] {
     groups.set(key, list);
   });
   return hits.map((hit, index) => {
+    const extra = collected[index]?.extraNote ?? "";
     const group = groups.get(`${hit.startLabel}|${hit.endLabel}`) ?? [index];
     if (group.length < 2) {
       const after = text.slice(hit.end, bounds[index]?.end ?? text.length);
-      return { cents: summary[index] ?? null, items: chargeLines(after), note: "" };
+      const pageCharges = collectCharges(after);
+      return { cents: summary[index] ?? null, items: pageCharges.items, note: pageCharges.extraNote };
     }
     const own = ownCents[index];
     if (own != null && own !== 0) {
-      return { cents: own, items: itemLines[index] ?? [], note: "multi-meter statement; charges are this item's lines" };
+      return {
+        cents: own,
+        items: itemLines[index] ?? [],
+        note: withExtra("multi-meter statement; charges are this item's lines", extra),
+      };
     }
     const siblingSum = group.filter((other) => other !== index).reduce((total, other) => total + (ownCents[other] ?? 0), 0);
     const siblingHasLines = group.some((other) => other !== index && ownCents[other] != null && ownCents[other] !== 0);
@@ -415,17 +553,21 @@ function chargeChoices(text: string, hits: UsageHit[]): ChargeChoice[] {
       return {
         cents: remainder === 0 ? null : remainder,
         items: itemLines[index] ?? [],
-        note: "multi-meter statement; charges are account new charges minus the other meters on this period",
+        note: withExtra("multi-meter statement; charges are account new charges minus the other meters on this period", extra),
       };
     }
     if (account != null && account !== 0 && !siblingHasLines) {
       return {
         cents: account,
         items: itemLines[index] ?? [],
-        note: "multi-meter statement; charges are this page's new charges",
+        note: withExtra("multi-meter statement; charges are this page's new charges", extra),
       };
     }
-    return { cents: null, items: itemLines[index] ?? [], note: "multi-meter statement; missing new charges" };
+    return {
+      cents: null,
+      items: itemLines[index] ?? [],
+      note: withExtra("multi-meter statement; missing new charges", extra),
+    };
   });
 }
 
@@ -457,7 +599,23 @@ function parsePeriod(
   const before = window.before;
   const after = window.after;
   row.rate_schedule = rateSchedule(before) || rateSchedule(text.slice(0, hit.index));
-  row.demand_kw_max = demandKw(after, hit.meter, hit.endLabel);
+  const tou = Boolean(hit.kwhOn || hit.kwhOff);
+  if (tou) {
+    row.kwh_on_peak = hit.kwhOn;
+    row.kwh_off_peak = hit.kwhOff;
+    const demand = touDemand(after, hit.meter, hit.endLabel);
+    row.demand_kw_on_peak = demand.on;
+    row.demand_kw_off_peak = demand.off;
+    row.demand_kw_max = demand.max;
+    const service = itemServiceAddress(before);
+    if (service) {
+      row.service_address = service.address;
+      row.service_city = service.city;
+      row.service_state = "UT";
+    }
+  } else {
+    row.demand_kw_max = demandKw(after, hit.meter, hit.endLabel);
+  }
   row.bill_prepared_date = statementDate(before, after, BILLING_DATE);
   row.due_date = statementDate(before, after, DUE_DATE);
 
@@ -475,7 +633,7 @@ function parsePeriod(
   }
   if (choice.note) notes.push(choice.note);
   if (multi) notes.push("multi-statement pdf; row is this service period only");
-  notes.push("non-TOU; usage in kwh_total");
+  notes.push(tou ? "time-of-day; usage in kwh_on_peak and kwh_off_peak" : "non-TOU; usage in kwh_total");
 
   const required = ["customer_account", "amount_due_usd", "kwh_total", "billing_period_start", "billing_period_end"] as const;
   const missing = required.filter((field) => !row[field]);
