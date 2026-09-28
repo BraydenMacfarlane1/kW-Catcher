@@ -7,11 +7,12 @@ import {
   type BillStatus,
   type ParseOutcome,
 } from "./base";
+import { loganCityParser } from "./logan";
 import { nvEnergyParser } from "./nvenergy";
 import { rockyMountainParser } from "./rmp";
 import { sceParser } from "./sce";
 
-const PARSERS: readonly BillParser[] = [sceParser, nvEnergyParser, rockyMountainParser];
+const PARSERS: readonly BillParser[] = [sceParser, nvEnergyParser, rockyMountainParser, loganCityParser];
 
 export function parsers(): readonly BillParser[] {
   return PARSERS;
@@ -46,6 +47,7 @@ export function parseDocument(text: string, sourceFile: string): ParseOutcome {
 }
 
 function rowStatus(fields: BillDraft): BillStatus {
+  if (fields.notes.startsWith("needs_review")) return "failed";
   return missingRequired(fields).length > 0 ? "failed" : "ok";
 }
 

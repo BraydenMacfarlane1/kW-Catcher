@@ -32,13 +32,25 @@ export const CONTRACT_RECOMMENDED = [
   "parser_id",
 ] as const satisfies readonly BillColumn[];
 
-/** Provenance kept on the row. `other_charges_usd` is the residual. */
+/**
+ * Provenance kept on the row.
+ * When `electric_total_usd` is blank, `other_charges_usd` is still
+ * total − energy − demand − taxes − fees.
+ * When `electric_total_usd` is set, `other_charges_usd` is
+ * electric total − energy − demand − energy_demand_combined − taxes − fees,
+ * and `non_electric_charges_usd` is not part of that residual.
+ */
 export const CONTRACT_OPTIONAL = [
   "energy_charges_usd",
   "demand_charges_usd",
+  "energy_demand_combined_usd",
   "taxes_usd",
   "fees_usd",
   "other_charges_usd",
+  "electric_total_usd",
+  "non_electric_charges_usd",
+  "charges_tax_inclusive",
+  "embedded_tax_rate",
   "total_new_charges_usd",
   "amount_due_usd",
   "due_date",

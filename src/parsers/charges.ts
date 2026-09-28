@@ -1,11 +1,21 @@
 import type { BillDraft } from "./base";
 
-export type ChargeCategory = "tax" | "fee" | "energy" | "demand" | "other";
+export type ChargeCategory = "tax" | "fee" | "energy" | "demand" | "energy_demand" | "other";
+
+export type LineService = "electric" | "non_electric";
+
+export type LineServiceType = "water" | "sewer" | "garbage" | "recycle" | "storm" | "dispatch" | "other";
 
 export interface ChargeLine {
   label: string;
   amount_usd: string;
   category: ChargeCategory;
+  /** Omitted means electric. Existing parsers leave this off. */
+  service?: LineService;
+  /** Set on non-electric lines. */
+  service_type?: LineServiceType;
+  tax_inclusive?: boolean;
+  embedded_tax_rate?: string | null;
 }
 
 /** Charge lines from "Details of your new charges". Empty when that section is absent. */

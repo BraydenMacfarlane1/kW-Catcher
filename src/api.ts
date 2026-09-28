@@ -294,13 +294,18 @@ function billCounts(bills: Pick<BillRow, "status" | "notes">[]): {
   ok: number;
   needs_parser: number;
   needs_password: number;
+  needs_review: number;
   failed: number;
   total: number;
 } {
-  const counts = { ok: 0, needs_parser: 0, needs_password: 0, failed: 0, total: bills.length };
+  const counts = { ok: 0, needs_parser: 0, needs_password: 0, needs_review: 0, failed: 0, total: bills.length };
   for (const bill of bills) {
     if (bill.notes.startsWith("needs_password")) {
       counts.needs_password += 1;
+      continue;
+    }
+    if (bill.notes.startsWith("needs_review")) {
+      counts.needs_review += 1;
       continue;
     }
     if (bill.status === "ok" || bill.status === "needs_parser" || bill.status === "failed") {
