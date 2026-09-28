@@ -29,7 +29,14 @@ function chargesReconcile(row: Record<string, string>): boolean {
 
 describe("SCE parser", () => {
   it("matches the CSV header", () => {
-    expect(Object.keys(csv[0] ?? {})).toEqual([...BILL_COLUMNS]);
+    const addedLater = new Set([
+      "energy_demand_combined_usd",
+      "electric_total_usd",
+      "non_electric_charges_usd",
+      "charges_tax_inclusive",
+      "embedded_tax_rate",
+    ]);
+    expect(Object.keys(csv[0] ?? {})).toEqual(BILL_COLUMNS.filter((column) => !addedLater.has(column)));
     expect(summer).toBeTruthy();
   });
 

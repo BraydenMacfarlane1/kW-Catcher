@@ -398,7 +398,7 @@ describe("write API", () => {
       notes: "dock",
       customer_name: "Acme",
       meters: [],
-      bill_counts: { ok: 0, needs_parser: 0, needs_password: 0, failed: 0, total: 0 },
+      bill_counts: { ok: 0, needs_parser: 0, needs_password: 0, needs_review: 0, failed: 0, total: 0 },
     });
   });
 
@@ -527,11 +527,19 @@ describe("write API", () => {
       notes: "MISSING_REQUIRED:kwh_total",
       source_key: `${site.id}|failed`,
     });
-    const res = await app.request(`/api/v1/sites/${site.id}`, { headers: bearer() }, env({}, [locked, failed]));
+    const review = bill({
+      id: "bill-review",
+      site_id: site.id,
+      meter_id: meter.meter_id,
+      status: "failed",
+      notes: "needs_review: bill total checksum failed: lines 1.00 != 2.00",
+      source_key: `${site.id}|review`,
+    });
+    const res = await app.request(`/api/v1/sites/${site.id}`, { headers: bearer() }, env({}, [locked, failed, review]));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { bill_counts: Record<string, number>; meters: MeterRow[] };
     expect(body.meters).toEqual([meter]);
-    expect(body.bill_counts).toEqual({ ok: 1, needs_parser: 0, needs_password: 1, failed: 1, total: 3 });
+    expect(body.bill_counts).toEqual({ ok: 1, needs_parser: 0, needs_password: 1, needs_review: 1, failed: 1, total: 4 });
   });
 
   it("returns 404 for a missing site", async () => {

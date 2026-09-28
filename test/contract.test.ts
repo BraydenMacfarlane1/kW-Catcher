@@ -18,7 +18,16 @@ const seed = parseCsv(readFileSync(new URL("../seed/xu-holdings-sce-12mo.csv", i
 const schemaSql = [
   readFileSync(new URL("../migrations/0001_init.sql", import.meta.url), "utf8"),
   readFileSync(new URL("../migrations/0004_charge_components.sql", import.meta.url), "utf8"),
+  readFileSync(new URL("../migrations/0006_logan_charge_fields.sql", import.meta.url), "utf8"),
 ].join("\n");
+
+const LOGAN_COLUMNS = new Set<string>([
+  "energy_demand_combined_usd",
+  "electric_total_usd",
+  "non_electric_charges_usd",
+  "charges_tax_inclusive",
+  "embedded_tax_rate",
+]);
 
 function cents(value: string | undefined): number {
   if (!value) return 0;
@@ -46,6 +55,7 @@ describe(SUN_DADDY_INGEST_CONTRACT, () => {
     for (const column of [...CONTRACT_REQUIRED, ...CONTRACT_RECOMMENDED, ...CONTRACT_OPTIONAL]) {
       expect(header).toContain(column);
     }
+    for (const column of LOGAN_COLUMNS) expect(header).toContain(column);
   });
 
   it("stores every contract column on the D1 bills table", () => {
@@ -56,7 +66,7 @@ describe(SUN_DADDY_INGEST_CONTRACT, () => {
   });
 
   it("keeps the seed on the contract", () => {
-    expect(Object.keys(seed[0] ?? {})).toEqual([...BILL_COLUMNS]);
+    expect(Object.keys(seed[0] ?? {})).toEqual(BILL_COLUMNS.filter((column) => !LOGAN_COLUMNS.has(column)));
     expect(seed).toHaveLength(12);
     const meters = new Set(seed.map((row) => row.meter_id));
     expect(meters).toEqual(new Set(["259000-081267"]));
