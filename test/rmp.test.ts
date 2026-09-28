@@ -64,6 +64,53 @@ function chargeCents(value: string | undefined): number {
   return Number.isFinite(amount) ? Math.round(amount * 100) : 0;
 }
 
+interface ExpectedCharges {
+  meter: string;
+  start: string;
+  end: string;
+  energy: string;
+  demand: string;
+  fees: string;
+  taxes: string;
+  total: string;
+}
+
+interface ParsedLine {
+  label: string;
+  amount_usd: string;
+  category: string;
+}
+
+function expectedCharges(): ExpectedCharges[] {
+  return readFileSync(new URL("./fixtures/rmp-ifly-6a-expected-charges.tsv", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .slice(1)
+    .map((line) => {
+      const [meter, start, end, energy, demand, fees, taxes, total] = line.split("\t");
+      return {
+        meter: meter ?? "",
+        start: start ?? "",
+        end: end ?? "",
+        energy: energy ?? "",
+        demand: demand ?? "",
+        fees: fees ?? "",
+        taxes: taxes ?? "",
+        total: total ?? "",
+      };
+    });
+}
+
+function lineItems(row: { line_items_json: string } | undefined): ParsedLine[] {
+  return JSON.parse(row?.line_items_json ?? "[]") as ParsedLine[];
+}
+
+function expectLine(items: ParsedLine[], amount: string, category: string, label: RegExp): void {
+  const match = items.find((item) => item.amount_usd === amount);
+  expect(match, amount).toMatchObject({ category, amount_usd: amount });
+  expect(match?.label, amount).toMatch(label);
+}
+
 function chargesReconcile(row: Record<string, string>): boolean {
   const parts = ["energy_charges_usd", "demand_charges_usd", "taxes_usd", "fees_usd", "other_charges_usd"];
   const sum = parts.reduce((total, column) => total + chargeCents(row[column]), 0);
@@ -504,5 +551,169 @@ MILLCREEK UT 84106-3211
     expect(outcome.rows).toHaveLength(24);
     expect(outcome.rows.every((row) => row.status === "ok")).toBe(true);
     expect(outcome.rows.map((row) => row.fields.customer_account)).toEqual(Array.from({ length: 24 }, () => "90000001-0011"));
+  });
+
+  it("splits Schedule 6A energy, fees, and taxes for every iFly meter period", () => {
+    const text = readFileSync(new URL("./fixtures/rmp-ifly-6a-unpdf.txt", import.meta.url), "utf8");
+    const rows = parseRockyMountainBills(text, "rmp-ifly-6a.txt");
+    const expected = expectedCharges();
+    expect(expected).toHaveLength(24);
+    expect(rows).toHaveLength(24);
+
+    for (const period of expected) {
+      const row = rows.find(
+        (item) =>
+          item.meter_id === period.meter &&
+          item.billing_period_start === period.start &&
+          item.billing_period_end === period.end,
+      );
+      const id = `${period.meter} ${period.start}`;
+      expect(row, id).toBeDefined();
+      expect(row?.energy_charges_usd, id).toBe(period.energy);
+      expect(row?.demand_charges_usd, id).toBe(period.demand);
+      expect(row?.fees_usd, id).toBe(period.fees);
+      expect(row?.taxes_usd, id).toBe(period.taxes);
+      expect(row?.total_new_charges_usd, id).toBe(period.total);
+      expect(row?.other_charges_usd, id).toBe("0.00");
+      const parts = [period.energy, period.demand, period.fees, period.taxes].reduce(
+        (total, amount) => total + chargeCents(amount),
+        0,
+      );
+      expect(parts, id).toBe(chargeCents(period.total));
+    }
+
+    const outcome = parseDocument(text, "rmp-ifly-6a.txt");
+    expect(outcome.rows).toHaveLength(24);
+    expect(outcome.rows.every((row) => row.status === "ok")).toBe(true);
+  });
+
+  it("categorizes the first iFly period line by line", () => {
+    const text = readFileSync(new URL("./fixtures/rmp-ifly-6a-unpdf.txt", import.meta.url), "utf8");
+    const rows = parseRockyMountainBills(text, "rmp-ifly-6a.txt");
+    const flow = rows.find(
+      (row) => row.meter_id === "348223920" && row.billing_period_start === "2025-07-25" && row.billing_period_end === "2025-08-25",
+    );
+    const fly = rows.find(
+      (row) => row.meter_id === "77248816" && row.billing_period_start === "2025-07-25" && row.billing_period_end === "2025-08-25",
+    );
+    const flowItems = lineItems(flow);
+    const flyItems = lineItems(fly);
+
+    expectLine(flowItems, "3634.76", "energy", /First/i);
+    expectLine(flowItems, "5859.26", "energy", /Additional/i);
+    expectLine(flowItems, "-2033.85", "energy", /Off-peak/i);
+    expectLine(flowItems, "54.00", "fee", /Basic Charge/i);
+    expectLine(flowItems, "-36.55", "fee", /Renewable Energy/i);
+    expectLine(flowItems, "2035.88", "fee", /Energy Balancing/i);
+    expectLine(flowItems, "18.03", "fee", /Wildfire/i);
+    expectLine(flowItems, "350.00", "fee", /Customer Efficiency/i);
+    expectLine(flowItems, "26.49", "fee", /Elec Vehicle/i);
+    expectLine(flowItems, "5.60", "fee", /Lifeline/i);
+    expectLine(flowItems, "594.48", "tax", /Municipal Energy/i);
+    expectLine(flowItems, "718.33", "tax", /Utah Sales Tax/i);
+    expect(flowItems.some((item) => item.category === "demand")).toBe(false);
+
+    expectLine(flyItems, "9687.86", "energy", /First/i);
+    expectLine(flyItems, "1002.17", "energy", /Additional/i);
+    expectLine(flyItems, "-1517.67", "energy", /Off-peak/i);
+    expectLine(flyItems, "54.00", "fee", /Basic Charge/i);
+    expectLine(flyItems, "-44.94", "fee", /Renewable Energy/i);
+    expectLine(flyItems, "2503.14", "fee", /Energy Balancing/i);
+    expectLine(flyItems, "22.14", "fee", /Wildfire/i);
+    expectLine(flyItems, "430.33", "fee", /Customer Efficiency/i);
+    expectLine(flyItems, "32.57", "fee", /Elec Vehicle/i);
+    expectLine(flyItems, "5.60", "fee", /Lifeline/i);
+    expectLine(flyItems, "730.18", "tax", /Municipal Energy/i);
+    expectLine(flyItems, "882.30", "tax", /Utah Sales Tax/i);
+    expect(flyItems.some((item) => item.category === "demand")).toBe(false);
+  });
+
+  it("inherits the charge heading on prorated for-N-days lines", () => {
+    const text = readFileSync(new URL("./fixtures/rmp-ifly-6a-unpdf.txt", import.meta.url), "utf8");
+    const rows = parseRockyMountainBills(text, "rmp-ifly-6a.txt");
+    const byPeriod = (meter: string, start: string) =>
+      lineItems(rows.find((row) => row.meter_id === meter && row.billing_period_start === start));
+
+    const october = byPeriod("348223920", "2025-09-24");
+    for (const amount of ["755.01", "2561.26", "868.88", "2947.54", "-347.69", "-1179.55"]) {
+      expectLine(october, amount, "energy", /^for \d+ day\(s\)/i);
+    }
+
+    const june = byPeriod("348223920", "2026-05-26");
+    expectLine(june, "3568.10", "energy", /^for 24 day\(s\)/i);
+    expectLine(june, "657.83", "energy", /^for 5 day\(s\)/i);
+    expectLine(june, "-29.33", "fee", /^for 24 day\(s\)/i);
+    expectLine(june, "-5.35", "fee", /^for 5 day\(s\)/i);
+
+    const august = byPeriod("348223920", "2026-07-27");
+    expectLine(august, "31.45", "fee", /^for 16 day\(s\)/i);
+    expectLine(august, "24.21", "fee", /^for 13 day\(s\)/i);
+    expectLine(august, "31.23", "fee", /Schedule 92/i);
+
+    const january = byPeriod("77248816", "2025-12-26");
+    expectLine(january, "18.09", "fee", /^for 27 day\(s\)/i);
+    expectLine(january, "6.25", "fee", /^for 5 day\(s\)/i);
+  });
+
+  it("keeps prorated energy and demand off fees on other Rocky Mountain schedules", async () => {
+    const rows = parseRockyMountainBills(layout, "rmp-combined.pdf");
+    const at = (start: string) => rows.find((row) => row.billing_period_start === start);
+
+    const april = at("2025-04-16");
+    expect(april?.energy_charges_usd).toBe("165.18");
+    expect(april?.demand_charges_usd).toBe("0.00");
+    expect(april?.fees_usd).toBe("97.27");
+    expect(april?.taxes_usd).toBe("34.73");
+    expect(april?.other_charges_usd).toBe("19.72");
+
+    const may = at("2025-05-15");
+    expect(may?.energy_charges_usd).toBe("177.50");
+    expect(may?.demand_charges_usd).toBe("0.00");
+    expect(may?.fees_usd).toBe("102.61");
+    expect(may?.taxes_usd).toBe("36.79");
+    expect(may?.other_charges_usd).toBe("0.00");
+
+    const september = at("2025-09-16");
+    expect(september?.energy_charges_usd).toBe("463.14");
+    expect(september?.demand_charges_usd).toBe("51.85");
+    expect(september?.fees_usd).toBe("202.15");
+    expect(september?.taxes_usd).toBe("96.39");
+    expect(september?.other_charges_usd).toBe("-2.63");
+
+    const latest = at("2026-02-17");
+    expect(latest?.energy_charges_usd).toBe("680.41");
+    expect(latest?.demand_charges_usd).toBe("97.56");
+    expect(latest?.fees_usd).toBe("290.82");
+    expect(latest?.taxes_usd).toBe("141.71");
+
+    const june = lineItems(at("2025-06-16"));
+    expectLine(june, "36.01", "fee", /^for 16 day\(s\)/i);
+    expectLine(june, "28.30", "fee", /^for 14 day\(s\)/i);
+
+    const terra = parseRockyMountainBills(
+      readFileSync(new URL("./fixtures/rmp-terra-aug-oct.txt", import.meta.url), "utf8"),
+      "rmp-terra-sideways.pdf",
+    );
+    const august = terra.find((row) => row.meter_id === "348204387" && row.billing_period_start === "2025-07-08");
+    expect(august?.energy_charges_usd).toBe("126.30");
+    expect(august?.fees_usd).toBe("36.41");
+    const october = terra.find((row) => row.meter_id === "348204387" && row.billing_period_start === "2025-09-08");
+    expect(october?.demand_charges_usd).toBe("89.34");
+    expect(october?.fees_usd).toBe("10.00");
+    expect(october?.energy_charges_usd).toBe("0.00");
+
+    const bytes = new Uint8Array(readFileSync(new URL("./fixtures/rmp-combined.pdf", import.meta.url)));
+    const unlocked = parseRockyMountainBills(await extractPdfText(bytes, PASSWORD), "rmp-combined.pdf");
+    for (const [start, energy, demand, fees] of [
+      ["2025-04-16", "165.18", "0.00", "97.27"],
+      ["2025-05-15", "177.50", "0.00", "102.61"],
+      ["2025-09-16", "463.14", "51.85", "202.15"],
+    ] as const) {
+      const row = unlocked.find((item) => item.billing_period_start === start);
+      expect(row?.energy_charges_usd, start).toBe(energy);
+      expect(row?.demand_charges_usd, start).toBe(demand);
+      expect(row?.fees_usd, start).toBe(fees);
+      expect(row?.other_charges_usd, start).toBe("0.00");
+    }
   });
 });

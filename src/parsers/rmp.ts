@@ -324,8 +324,15 @@ function categoryFor(label: string): ChargeCategory {
   if (/\btax\b/i.test(label)) return "tax";
   if (/^demand charge\b/i.test(label)) return "demand";
   if (/^energy charge\b/i.test(label)) return "energy";
+  // Schedule 6A energy tiers and the off-peak kWh credit.
+  if (/^(?:first \d[\d,]* kwh|all additional kwh|off-peak kwh credit)\b/i.test(label)) return "energy";
   return "fee";
 }
+
+/** A charge name printed on its own line, with its prorated "for N day(s)" lines below it. */
+const CHARGE_HEADING =
+  /^(Basic Charge|Demand Charge|Energy Charge|Facilities Charge|First \d[\d,]* Kwh|All Additional Kwh|Off-peak Kwh Credit|Renewable Energy|Energy Balancing|Wildfire|Customer Efficiency|Elec Vehicle|Home Electric|Municipal Energy|Utah Sales|Level \d|Schedule 92)/i;
+const PRORATED = /^for \d+ day\(s\)/i;
 
 function chargeAmount(line: string): { text: string; index: number } | null {
   const rate = /-?[\d,]+\.\d{4,}/.exec(line);
@@ -364,7 +371,7 @@ function parseChargeLine(raw: string): ChargeLine | null {
   return {
     label,
     amount_usd: money(amount.text),
-    category: categoryFor(label),
+    category: categoryFor(line.slice(0, amount.index)),
   };
 }
 
@@ -387,10 +394,12 @@ function collectCharges(afterUsage: string): CollectedCharges {
   const extras: string[] = [];
   let keptToken = "";
   let printedCents: number | null = null;
+  let heading: ChargeCategory | null = null;
   for (let i = 0; i < parts.length; i++) {
     const header = headers[i]?.[0] ?? "";
     const token = /NEW CHARGES\s*-\s*(\d{2}\/\d{2})/i.exec(header)?.[1] ?? "";
     const part = parts[i] ?? "";
+    if (!/CONTINUED/i.test(header)) heading = null;
     if (token && keptToken && token !== keptToken) {
       const total = /Total New Charges\s+(-?[\d,]+\.\d{2})/i.exec(part);
       // The splitter also matches the "New Charges" inside "Total New Charges", so the amount
@@ -409,7 +418,14 @@ function collectCharges(afterUsage: string): CollectedCharges {
     const body = totalAt ? part.slice(0, totalAt.index) : part;
     for (const raw of body.split("\n")) {
       const item = parseChargeLine(raw);
-      if (item) items.push(item);
+      if (item) {
+        if (PRORATED.test(item.label) && heading) item.category = heading;
+        else heading = item.category;
+        items.push(item);
+        continue;
+      }
+      const line = raw.replace(/\s+/g, " ").trim();
+      if (CHARGE_HEADING.test(line)) heading = categoryFor(line);
     }
   }
   return { items, extraNote: extras.join("; "), printedCents };
