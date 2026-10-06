@@ -1,0 +1,4 @@
+billing_period_start	billing_period_end	billing_days	meter_id	kwh_total	demand_kw_max	energy_charges_usd	demand_charges_usd	fees_usd	taxes_usd	total_new_charges_usd	rate_schedule
+2026-05-22	2026-06-23	32	KU68249	55520	160	3504.43	2404.80	3.99	149.38	6062.60	GSD-1
+2026-06-23	2026-07-23	30	KU68249	45440	115	2868.17	1728.45	3.62	115.70	4715.94	GSD-1
+2026-07-23	2026-08-24	32	KU68249	61440	181	3878.09	2720.43	-13.59	167.07	6752.00	GSD-1
