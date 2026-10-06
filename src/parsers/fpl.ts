@@ -81,9 +81,9 @@ function leftCut(text: string): number {
 
 function chargeLabel(beforeAmount: string): string {
   return beforeAmount
-    .replace(/\(\s*\$[^)]*\)/g, "")
     .replace(/:/g, "")
     .replace(/\s+/g, " ")
+    .replace(/\(\s+/g, "(")
     .trim();
 }
 

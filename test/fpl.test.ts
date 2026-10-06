@@ -149,9 +149,9 @@ describe("Florida Power & Light GSD-1", () => {
     const items = linesOf(outcome.rows[0]?.fields.line_items_json ?? "[]");
     expect(items.map((item) => [item.category, item.amount_usd, item.label])).toEqual([
       ["fee", "33.71", "Base charge"],
-      ["energy", "1727.23", "Non-fuel"],
-      ["energy", "1777.20", "Fuel"],
-      ["demand", "2404.80", "Demand"],
+      ["energy", "1727.23", "Non-fuel ($0.031110 per kWh)"],
+      ["energy", "1777.20", "Fuel ($0.032010 per kWh)"],
+      ["demand", "2404.80", "Demand ($15.03 per KW)"],
       ["fee", "-122.00", "On call credit"],
       ["tax", "149.38", "Gross receipts tax (State tax)"],
       ["fee", "87.14", "Late payment charge"],
