@@ -1,0 +1,310 @@
+{
+ "source": "estimateGaps.reference.mjs (Sun Daddy spec v1) run on test/fixtures/mid-expected.tsv and the synthetic vectors below",
+ "mid": {
+  "900001": [
+   {
+    "billing_period_start": "2026-07-22",
+    "billing_period_end": "2026-08-20",
+    "kwh_total": 7833,
+    "demand_kw_max": 61.93,
+    "estimated": true,
+    "estimation_method": "neighbor_daily_avg_v1",
+    "_gap_days": 28,
+    "_daily_kwh": 279.75
+   }
+  ],
+  "900002": [
+   {
+    "billing_period_start": "2026-07-22",
+    "billing_period_end": "2026-08-20",
+    "kwh_total": 4242,
+    "demand_kw_max": 42.5,
+    "estimated": true,
+    "estimation_method": "neighbor_daily_avg_v1",
+    "_gap_days": 28,
+    "_daily_kwh": 151.498
+   }
+  ],
+  "900003": [
+   {
+    "billing_period_start": "2026-07-22",
+    "billing_period_end": "2026-08-20",
+    "kwh_total": 243,
+    "demand_kw_max": 0.83,
+    "estimated": true,
+    "estimation_method": "neighbor_daily_avg_v1",
+    "_gap_days": 28,
+    "_daily_kwh": 8.672
+   }
+  ]
+ },
+ "synthetic": {
+  "spec_inclusive_61_day_split": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-01",
+     "billing_period_end": "2025-01-31",
+     "kwh_total": "3100",
+     "demand_kw_max": "20"
+    },
+    {
+     "billing_period_start": "2025-02-01",
+     "billing_period_end": "2025-02-28",
+     "kwh_total": "2800",
+     "demand_kw_max": "22"
+    },
+    {
+     "billing_period_start": "2025-05-01",
+     "billing_period_end": "2025-05-31",
+     "kwh_total": "6200",
+     "demand_kw_max": "30"
+    },
+    {
+     "billing_period_start": "2025-06-01",
+     "billing_period_end": "2025-06-30",
+     "kwh_total": "6000",
+     "demand_kw_max": "31"
+    }
+   ],
+   "expected": [
+    {
+     "billing_period_start": "2025-03-01",
+     "billing_period_end": "2025-03-31",
+     "kwh_total": 4650,
+     "demand_kw_max": 26,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 31,
+     "_daily_kwh": 150
+    },
+    {
+     "billing_period_start": "2025-04-01",
+     "billing_period_end": "2025-04-30",
+     "kwh_total": 4500,
+     "demand_kw_max": 26,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 30,
+     "_daily_kwh": 150
+    }
+   ]
+  },
+  "gap_under_3_days_ignored": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-01",
+     "billing_period_end": "2025-01-30",
+     "kwh_total": "3000",
+     "demand_kw_max": "10"
+    },
+    {
+     "billing_period_start": "2025-02-01",
+     "billing_period_end": "2025-02-28",
+     "kwh_total": "2800",
+     "demand_kw_max": "12"
+    },
+    {
+     "billing_period_start": "2025-03-03",
+     "billing_period_end": "2025-03-31",
+     "kwh_total": "2900",
+     "demand_kw_max": "11"
+    }
+   ],
+   "expected": []
+  },
+  "half_up_rounding": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-01",
+     "billing_period_end": "2025-01-30",
+     "kwh_total": "30",
+     "demand_kw_max": "1.005"
+    },
+    {
+     "billing_period_start": "2025-02-03",
+     "billing_period_end": "2025-03-04",
+     "kwh_total": "60",
+     "demand_kw_max": "2"
+    }
+   ],
+   "expected": [
+    {
+     "billing_period_start": "2025-01-31",
+     "billing_period_end": "2025-02-02",
+     "kwh_total": 5,
+     "demand_kw_max": 1.5,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 3,
+     "_daily_kwh": 1.5
+    }
+   ]
+  },
+  "handoff_long_gap_split": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-10",
+     "billing_period_end": "2025-02-10",
+     "kwh_total": "3100",
+     "demand_kw_max": "40"
+    },
+    {
+     "billing_period_start": "2025-02-10",
+     "billing_period_end": "2025-03-12",
+     "kwh_total": "3000",
+     "demand_kw_max": "42"
+    },
+    {
+     "billing_period_start": "2025-06-10",
+     "billing_period_end": "2025-07-10",
+     "kwh_total": "6000",
+     "demand_kw_max": ""
+    },
+    {
+     "billing_period_start": "2025-07-10",
+     "billing_period_end": "2025-08-11",
+     "kwh_total": "6400",
+     "demand_kw_max": "50"
+    }
+   ],
+   "expected": [
+    {
+     "billing_period_start": "2025-03-12",
+     "billing_period_end": "2025-04-12",
+     "kwh_total": 4355,
+     "demand_kw_max": 42,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 30,
+     "_daily_kwh": 145.161
+    },
+    {
+     "billing_period_start": "2025-04-12",
+     "billing_period_end": "2025-05-12",
+     "kwh_total": 4355,
+     "demand_kw_max": 42,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 30,
+     "_daily_kwh": 145.161
+    },
+    {
+     "billing_period_start": "2025-05-12",
+     "billing_period_end": "2025-06-10",
+     "kwh_total": 4209,
+     "demand_kw_max": 42,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 29,
+     "_daily_kwh": 145.161
+    }
+   ]
+  },
+  "missing_neighbor_peak": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-01",
+     "billing_period_end": "2025-01-31",
+     "kwh_total": "3100",
+     "demand_kw_max": ""
+    },
+    {
+     "billing_period_start": "2025-03-01",
+     "billing_period_end": "2025-03-31",
+     "kwh_total": "3100",
+     "demand_kw_max": "18.4"
+    },
+    {
+     "billing_period_start": "2025-05-01",
+     "billing_period_end": "2025-05-31",
+     "kwh_total": "3100",
+     "demand_kw_max": ""
+    }
+   ],
+   "expected": [
+    {
+     "billing_period_start": "2025-02-01",
+     "billing_period_end": "2025-02-28",
+     "kwh_total": 2800,
+     "demand_kw_max": 18.4,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 28,
+     "_daily_kwh": 100
+    },
+    {
+     "billing_period_start": "2025-04-01",
+     "billing_period_end": "2025-04-30",
+     "kwh_total": 3000,
+     "demand_kw_max": 18.4,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 30,
+     "_daily_kwh": 100
+    }
+   ]
+  },
+  "missing_neighbor_kwh_skips_gap": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-01",
+     "billing_period_end": "2025-01-31",
+     "kwh_total": "",
+     "demand_kw_max": "5"
+    },
+    {
+     "billing_period_start": "2025-03-01",
+     "billing_period_end": "2025-03-31",
+     "kwh_total": "3100",
+     "demand_kw_max": "5"
+    }
+   ],
+   "expected": []
+  },
+  "single_row_no_edges": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-01",
+     "billing_period_end": "2025-01-31",
+     "kwh_total": "3100",
+     "demand_kw_max": "5"
+    }
+   ],
+   "expected": []
+  },
+  "nested_rows_use_max_end": {
+   "rows": [
+    {
+     "billing_period_start": "2025-01-01",
+     "billing_period_end": "2025-03-31",
+     "kwh_total": "9000",
+     "demand_kw_max": "30"
+    },
+    {
+     "billing_period_start": "2025-02-01",
+     "billing_period_end": "2025-02-28",
+     "kwh_total": "2800",
+     "demand_kw_max": "20"
+    },
+    {
+     "billing_period_start": "2025-04-10",
+     "billing_period_end": "2025-05-09",
+     "kwh_total": "3000",
+     "demand_kw_max": "40"
+    }
+   ],
+   "expected": [
+    {
+     "billing_period_start": "2025-04-01",
+     "billing_period_end": "2025-04-09",
+     "kwh_total": 900,
+     "demand_kw_max": 35,
+     "estimated": true,
+     "estimation_method": "neighbor_daily_avg_v1",
+     "_gap_days": 9,
+     "_daily_kwh": 100
+    }
+   ]
+  }
+ }
+}

@@ -49,7 +49,12 @@ export function missingMonths(bills: readonly DatedBill[]): string[] {
   );
 }
 
-export function timelineRows<T extends DatedBill>(bills: readonly T[]): TimelineRow<T>[] {
+/**
+ * Bills in date order with missing months between them. `coverage` decides
+ * which bills count as covering a month (default: all of them). Pass only the
+ * real bills so an estimated row is listed but does not hide a missing month.
+ */
+export function timelineRows<T extends DatedBill>(bills: readonly T[], coverage: readonly T[] = bills): TimelineRow<T>[] {
   const dated = bills.filter((bill) => bill.billing_period_start && bill.billing_period_end);
   const undated = bills.filter((bill) => !bill.billing_period_start || !bill.billing_period_end);
   if (dated.length === 0) return undated.map((bill) => ({ kind: "bill", bill }));
@@ -60,7 +65,7 @@ export function timelineRows<T extends DatedBill>(bills: readonly T[]): Timeline
     if (bill.billing_period_start < minStart) minStart = bill.billing_period_start;
     if (bill.billing_period_end > maxEnd) maxEnd = bill.billing_period_end;
   }
-  const missing = new Set(missingMonths(dated));
+  const missing = new Set(missingMonths(coverage));
   const byStartMonth = new Map<string, T[]>();
   for (const bill of dated) {
     const month = bill.billing_period_start.slice(0, 7);

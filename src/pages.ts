@@ -1,5 +1,6 @@
 import { timelineRows, type TimelineRow } from "./gaps";
 import type { BillRow, MeterRow, SiteRow } from "./db";
+import { isEstimated, type ExportBill } from "./estimate";
 
 const TABLE_COLUMNS: { key: keyof BillRow; label: string }[] = [
   { key: "status", label: "Status" },
@@ -71,11 +72,12 @@ export function renderHome(sites: { site: SiteRow; meters: number; bills: number
 export function renderSite(input: {
   site: SiteRow;
   meters: MeterRow[];
-  bills: BillRow[];
+  /** Real bills plus estimated rows from withEstimatedRows. */
+  bills: ExportBill[];
   banner: string;
 }): string {
   const metersByNumber = new Map(input.meters.map((meter) => [meter.meter_id, meter]));
-  const groups = new Map<string, BillRow[]>();
+  const groups = new Map<string, ExportBill[]>();
   for (const bill of input.bills) {
     const key = bill.meter_id || "";
     const list = groups.get(key) ?? [];
@@ -124,7 +126,7 @@ function compareMeterIds(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
-function renderMeter(siteId: string, meterId: string, meter: MeterRow | undefined, bills: BillRow[]): string {
+function renderMeter(siteId: string, meterId: string, meter: MeterRow | undefined, bills: ExportBill[]): string {
   const title = meterId ? `Meter ${meterId}` : "No meter id";
   const download = meterId
     ? `<a href="/sites/${esc(siteId)}/meters/${encodeURIComponent(meterId)}/export.csv">Download this meter</a>`
@@ -132,8 +134,13 @@ function renderMeter(siteId: string, meterId: string, meter: MeterRow | undefine
   const address = meter
     ? [meter.service_address, meter.service_city, meter.service_state, meter.service_zip].filter(Boolean).join(", ")
     : "";
-  const rows = meterId ? timelineRows(bills) : bills.map((bill) => ({ kind: "bill" as const, bill }));
+  const real = bills.filter((bill) => !isEstimated(bill));
+  const estimatedCount = bills.length - real.length;
+  const rows = meterId ? timelineRows(bills, real) : bills.map((bill) => ({ kind: "bill" as const, bill }));
   const gapCount = rows.filter((row) => row.kind === "gap").length;
+  const estimateNote = estimatedCount
+    ? `<p class="gap-note">${estimatedCount} estimated period${estimatedCount === 1 ? "" : "s"} (no bill uploaded) filled from the neighboring bills' kWh/day and peak kW. They are labeled estimated, carry no dollars, and are not counted as bills.</p>`
+    : "";
   const gapNote = meterId
     ? gapCount === 0
       ? `<p class="ok-note">No missing months between the first and last bill.</p>`
@@ -147,23 +154,29 @@ function renderMeter(siteId: string, meterId: string, meter: MeterRow | undefine
     </div>
     ${address ? `<p class="meta">${esc(address)}${meter?.utility ? ` · ${esc(meter.utility)}` : ""}</p>` : ""}
     ${gapNote}
+    ${estimateNote}
     <div class="table-wrap">
       <table>
         <thead><tr>${TABLE_COLUMNS.map((column) => `<th>${column.label}</th>`).join("")}<th>Notes</th></tr></thead>
         <tbody>${rows.length ? rows.map(renderRow).join("") : `<tr><td colspan="${TABLE_COLUMNS.length + 1}">No bills yet.</td></tr>`}</tbody>
       </table>
     </div>
-    ${renderExcerpts(bills)}
+    ${renderExcerpts(real)}
   </section>`;
 }
 
-function renderRow(row: TimelineRow<BillRow>): string {
+function renderRow(row: TimelineRow<ExportBill>): string {
   if (row.kind === "gap") {
     return `<tr class="gap"><td colspan="${TABLE_COLUMNS.length + 1}">Missing month ${esc(row.month)} — no bill covers this month</td></tr>`;
   }
   const bill = row.bill;
-  const cells = TABLE_COLUMNS.map((column) => `<td>${esc(String(bill[column.key] ?? ""))}</td>`).join("");
-  return `<tr class="status-${esc(bill.status)}">${cells}<td>${esc(bill.notes)}</td></tr>`;
+  const estimated = isEstimated(bill);
+  const cells = TABLE_COLUMNS.map((column) => {
+    const value = column.key === "status" && estimated ? "estimated" : String(bill[column.key] ?? "");
+    return `<td>${esc(value)}</td>`;
+  }).join("");
+  const rowClass = estimated ? "estimated" : `status-${esc(bill.status)}`;
+  return `<tr class="${rowClass}">${cells}<td>${esc(bill.notes)}</td></tr>`;
 }
 
 function renderExcerpts(bills: BillRow[]): string {

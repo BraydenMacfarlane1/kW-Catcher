@@ -7,6 +7,7 @@ import {
   CONTRACT_RECOMMENDED,
   CONTRACT_REQUIRED,
   CSV_BOOKKEEPING_COLUMNS,
+  EXPORT_ESTIMATE_COLUMNS,
   SUN_DADDY_INGEST_CONTRACT,
   csvExportColumns,
   isIsoDate,
@@ -47,7 +48,7 @@ describe(SUN_DADDY_INGEST_CONTRACT, () => {
     expect(new Set(BILL_COLUMNS)).toEqual(new Set(CONTRACT_COLUMNS));
     expect(BILL_COLUMNS).toHaveLength(CONTRACT_COLUMNS.length);
     expect(header.slice(0, BILL_COLUMNS.length)).toEqual([...BILL_COLUMNS]);
-    expect(header.slice(BILL_COLUMNS.length)).toEqual([...CSV_BOOKKEEPING_COLUMNS]);
+    expect(header.slice(BILL_COLUMNS.length)).toEqual([...EXPORT_ESTIMATE_COLUMNS, ...CSV_BOOKKEEPING_COLUMNS]);
     expect(header).not.toContain("month_index");
 
     const exported = toCsv(header, [Object.fromEntries(header.map((column) => [column, ""]))]);
