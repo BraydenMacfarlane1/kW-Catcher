@@ -13,6 +13,7 @@ import {
   type SiteInput,
   type SiteRow,
 } from "./db";
+import { withEstimatedRows, type ExportBill } from "./estimate";
 import { billExportRecords, csvResponse, fileSlug } from "./export";
 import { isId, isMeterId } from "./ids";
 import { ingestPdf, type IngestResult } from "./ingest";
@@ -223,7 +224,7 @@ function requireApiToken(c: Context<{ Bindings: Env }>, next: () => Promise<void
 }
 
 type LoadedBills =
-  | { ok: true; site: SiteRow; bills: BillRow[] }
+  | { ok: true; site: SiteRow; bills: ExportBill[] }
   | { ok: false; response: Response };
 
 async function loadExport(c: Context<{ Bindings: Env }>, siteId: string, meterId?: string): Promise<LoadedBills> {
@@ -236,7 +237,7 @@ async function loadExport(c: Context<{ Bindings: Env }>, siteId: string, meterId
   if (meterId !== undefined && bills.length === 0) {
     return { ok: false, response: c.json({ error: "not_found" }, 404) };
   }
-  return { ok: true, site, bills };
+  return { ok: true, site, bills: withEstimatedRows(bills) };
 }
 
 function siteJson(site: SiteRow): SiteRow {

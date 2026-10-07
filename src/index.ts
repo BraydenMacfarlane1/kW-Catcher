@@ -10,6 +10,7 @@ import {
   listMeters,
   listSites,
 } from "./db";
+import { withEstimatedRows } from "./estimate";
 import { csvResponse, fileSlug } from "./export";
 import { missingMonths } from "./gaps";
 import { isId, isMeterId } from "./ids";
@@ -77,7 +78,7 @@ app.get("/sites/:id", async (c) => {
     renderSite({
       site,
       meters,
-      bills,
+      bills: withEstimatedRows(bills),
       banner: pageBanner(c),
     }),
   );
@@ -134,7 +135,7 @@ app.get("/sites/:id/export.csv", async (c) => {
   if (!site) return c.notFound();
   const bills = await listBills(c.env.DB, id);
   const filename = `${fileSlug(site.name)}_all-meters.csv`;
-  return csvResponse(bills, filename);
+  return csvResponse(withEstimatedRows(bills), filename);
 });
 
 app.get("/sites/:id/meters/:meterId/export.csv", async (c) => {
@@ -146,7 +147,7 @@ app.get("/sites/:id/meters/:meterId/export.csv", async (c) => {
   const bills = await listBills(c.env.DB, id, meterId);
   if (bills.length === 0) return c.notFound();
   const filename = `${fileSlug(site.name)}_${fileSlug(meterId)}.csv`;
-  return csvResponse(bills, filename);
+  return csvResponse(withEstimatedRows(bills), filename);
 });
 
 app.notFound((c) => {

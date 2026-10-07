@@ -67,6 +67,7 @@ th { font-size: 0.75rem; letter-spacing: 0.02em; color: var(--muted); }
 tr.gap td { background: var(--gap); font-weight: 600; white-space: normal; }
 tr.status-needs_parser td, tr.status-failed td { background: var(--bad); }
 tr.status-ok td { background: var(--paper); }
+tr.estimated td { background: var(--paper); font-style: italic; color: var(--muted); }
 
 form {
   display: flex;

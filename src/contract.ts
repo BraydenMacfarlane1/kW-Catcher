@@ -73,6 +73,13 @@ export const CONTRACT_COLUMNS = [
   ...CONTRACT_OPTIONAL,
 ] as const satisfies readonly BillColumn[];
 
+/**
+ * Export-only columns after the contract columns. Not stored in D1.
+ * `estimated` is "true" on rows built by src/estimate.ts and "false" on real bills.
+ * `estimation_method` is "neighbor_daily_avg_v1" on estimated rows and blank on real bills.
+ */
+export const EXPORT_ESTIMATE_COLUMNS = ["estimated", "estimation_method"] as const;
+
 /** Bookkeeping after the contract columns. Sun Daddy ignores these on ingest. */
 export const CSV_BOOKKEEPING_COLUMNS = ["id", "site_id", "r2_key", "created_at", "status"] as const;
 
@@ -88,7 +95,7 @@ export function csvExportColumns(): readonly string[] {
       `${SUN_DADDY_INGEST_CONTRACT} drift. missing=${missing.join(",") || "-"} extra=${extra.join(",") || "-"}`,
     );
   }
-  return [...BILL_COLUMNS, ...CSV_BOOKKEEPING_COLUMNS];
+  return [...BILL_COLUMNS, ...EXPORT_ESTIMATE_COLUMNS, ...CSV_BOOKKEEPING_COLUMNS];
 }
 
 export function isIsoDate(value: string): boolean {

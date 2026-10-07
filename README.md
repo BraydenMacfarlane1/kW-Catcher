@@ -62,9 +62,32 @@ That writes `migrations/0002_seed_xu_holdings.sql` (the original bill columns, s
 3. Each meter on a PDF becomes its own bill row, and each billing period in a combined multi-statement PDF becomes its own bill row (the same result as uploading those months as separate PDFs). The row count is the number of statements in the file. That length is not fixed: two statements become two rows, and a full year or longer (12+ months) becomes one row per statement. Those rows share one R2 object (`r2_key`) and upsert on `(site_id, meter_id, billing_period_start, billing_period_end)`. kWh and demand are stored per meter and per period and are never added together. A file that does not identify a meter and period upserts on a hash source key.
 4. The site page shows a separate table per `meter_id`. Missing months are computed for that meter only, between its own earliest and latest bill.
 5. If no parser matches, one `needs_parser` row is saved: the PDF and a text excerpt are kept, and bill fields are left blank (`line_items_json` is `[]`).
-6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the Sun Daddy ingest contract v1 columns, one row per meter, with no total row. `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`) are appended after the contract columns. The HTML pages and these two URLs stay unauthenticated.
+6. **Download this meter** on each table, or `GET /sites/:id/meters/:meterId/export.csv`. **All meters CSV** (`GET /sites/:id/export.csv`) is the Sun Daddy ingest contract v1 columns, one row per meter, with no total row. `estimated` and `estimation_method` come next (see **Estimated billing periods** below), then `id`, `site_id`, `r2_key`, `created_at`, and `status` (`ok`, `needs_parser`, `failed`). The HTML pages and these two URLs stay unauthenticated.
 7. **Re-parse stored PDFs** runs the registry once per stored file (not once per meter or period row).
 8. **Delete site** is on the site page and on the home list. Type the site name and submit. `POST /sites/:id/delete` removes that site's D1 rows (the site, its meters, and its bills) and the R2 objects for its stored PDFs, including a file under `sites/<id>/` that no longer has a bill row. A name that does not match redirects back to the site with a warning and deletes nothing. Success redirects to the home page with a short notice. This is an HTML form, like create and upload. It is not part of `/api/v1`, and Sun Daddy has no delete route.
+
+### Estimated billing periods
+
+When a meter is missing a bill between two bills it does have, every export (the UI site and meter CSVs and all four `/api/v1` export routes) adds an estimated row for that gap, using Sun Daddy's `neighbor_daily_avg_v1` method (`src/estimate.ts`, a port of Sun Daddy's reference `estimateGaps`). The rules:
+
+- **Gap.** The gap runs from the previous bill's end + 1 day to the next bill's start − 1 day, using the latest end seen so far on that meter.
+- **Short gaps.** A gap under 3 days is ignored.
+- **kWh.** `kwh_total` is the gap days × the mean of the two neighbors' kWh per day, rounded half up.
+- **Demand.** `demand_kw_max` is the mean of the neighbors' peaks that are present, rounded half up to 2 decimals. It is blank when neither neighbor has a peak.
+- **Long gaps.** A gap over 45 days is split into bill-length pieces.
+- **Ends.** Nothing is filled before a meter's first bill or after its last.
+- **Dates.** On meters whose bills hand off on the same date (the next start equals the previous end, as on MID), the row runs from the previous end to the next start. On inclusive meters it runs from the first missing day to the last.
+- **Blank columns.** TOU buckets, every dollar column, and `line_items_json` (`""`, not `[]`) are blank.
+- **Copied columns.** Identity columns (utility, account, SA, meter, address, rate) are copied from the previous bill.
+- **Flags.** The row has `estimated` `true`, `estimation_method` `neighbor_daily_avg_v1`, `status` `ok`, and `notes` naming the two neighbor periods. Real rows have `estimated` `false` and a blank `estimation_method`.
+
+Estimates are computed when the export runs, from the real `ok` rows. They are not stored in D1, so there is no migration. An estimate disappears when the real bill is uploaded, and re-parse never touches one. Failed, `needs_parser`, and `needs_review` rows are not used as neighbors.
+
+On the site page an estimated row shows in italics with status `estimated`. Estimated rows are not bills:
+
+- The month-gap check still highlights their months as missing.
+- `bill_counts` and the home-page counts do not include them.
+- They carry no dollars.
 
 ## HTTP API
 
@@ -91,7 +114,7 @@ A meter export with no rows is `404` `{ "error": "not_found" }`, matching the UI
 
 `POST /api/v1/sites` reads a JSON object. `name` is required (trimmed, 1–200 characters). Optional strings: `utility`, `address`, `city`, `state`, `zip`, `notes`, `customer_name`. Unknown fields are ignored. Those optional fields are stored on `sites` by `migrations/0005_site_profile.sql` and returned on list, create, and get. Existing rows stay blank. A duplicate name is `409` `{ "error": "name_taken" }`. A missing or too-long name, a non-string profile field, or a non-JSON body is `400`.
 
-`GET /api/v1/sites/:siteId` is the poll response: the site, its meters, and `bill_counts` of `{ ok, needs_parser, needs_password, needs_review, failed, total }`. `needs_password` counts stored rows whose `notes` start with `needs_password` (the row's `status` is `failed`). `needs_review` counts stored rows whose `notes` start with `needs_review` (the row's `status` is `failed`). Those rows are not also counted in `failed`. `total` is every bill row on the site.
+`GET /api/v1/sites/:siteId` is the poll response: the site, its meters, and `bill_counts` (stored rows only; estimated periods are not counted) of `{ ok, needs_parser, needs_password, needs_review, failed, total }`. `needs_password` counts stored rows whose `notes` start with `needs_password` (the row's `status` is `failed`). `needs_review` counts stored rows whose `notes` start with `needs_review` (the row's `status` is `failed`). Those rows are not also counted in `failed`. `total` is every bill row on the site.
 
 `POST /api/v1/sites/:siteId/bills` accepts `multipart/form-data`. File fields are `pdfs` (repeat for several files) and `pdf` (one file). Both are ingested, `pdfs` first. Optional `pdf_password` is the same one password the HTML form applies to every file in the submission. It is not stored. At most 25 files are parsed; the rest are `rejected` with detail `limit 25 files`. Each file goes through `ingestPdf`, the same function as `POST /sites/:id/upload`. The response is `200` JSON:
 

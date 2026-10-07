@@ -256,6 +256,64 @@ describe("read API", () => {
     expect(await siteCsv.text()).toBe(await uiCsv.text());
   });
 
+  it("adds estimated rows for an interior gap to every export path and the site page, not to bill_counts", async () => {
+    const march = bill({
+      id: "bill-3",
+      site_id: site.id,
+      meter_id: meter.meter_id,
+      utility: "SCE",
+      billing_period_start: "2025-03-01",
+      billing_period_end: "2025-03-31",
+      kwh_total: "3100",
+      demand_kw_max: "60",
+      status: "ok",
+      line_items_json: "[]",
+    });
+    const db = fakeDb([march]);
+    const withDb = () => env({ DB: db });
+    const siteRows = (await (await app.request(`/api/v1/sites/${site.id}/export.json`, { headers: bearer() }, withDb())).json()) as Record<string, string>[];
+    expect(siteRows.map((row) => [row.billing_period_start, row.billing_period_end, row.estimated])).toEqual([
+      ["2025-01-01", "2025-01-31", "false"],
+      ["2025-02-01", "2025-02-28", "true"],
+      ["2025-03-01", "2025-03-31", "false"],
+    ]);
+    const estimated = siteRows[1] ?? {};
+    // (1000/31 + 3100/31) / 2 x 28 days = 1851.6 -> 1852; peak mean of 40 and 60.
+    expect(estimated.kwh_total).toBe("1852");
+    expect(estimated.demand_kw_max).toBe("50.00");
+    expect(estimated.estimation_method).toBe("neighbor_daily_avg_v1");
+    expect(estimated.status).toBe("ok");
+    expect(estimated.kwh_on_peak).toBe("");
+    expect(estimated.line_items_json).toBe("");
+    expect(estimated.total_new_charges_usd).toBe("");
+    expect(estimated.meter_id).toBe(meter.meter_id);
+    expect(siteRows[0]?.estimation_method).toBe("");
+
+    const meterRows = (await (
+      await app.request(`/api/v1/sites/${site.id}/meters/${meter.meter_id}/export.json`, { headers: bearer() }, withDb())
+    ).json()) as Record<string, string>[];
+    expect(meterRows).toEqual(siteRows);
+
+    const apiCsv = await (await app.request(`/api/v1/sites/${site.id}/export.csv`, { headers: bearer() }, withDb())).text();
+    const uiCsv = await (await app.request(`/sites/${site.id}/export.csv`, {}, withDb())).text();
+    const uiMeterCsv = await (await app.request(`/sites/${site.id}/meters/${meter.meter_id}/export.csv`, {}, withDb())).text();
+    expect(uiCsv).toBe(apiCsv);
+    expect(uiMeterCsv).toBe(apiCsv);
+    expect(apiCsv.trim().split("\n")).toHaveLength(4);
+    expect(apiCsv).toContain(",true,neighbor_daily_avg_v1,");
+
+    const detail = (await (await app.request(`/api/v1/sites/${site.id}`, { headers: bearer() }, withDb())).json()) as {
+      bill_counts: Record<string, number>;
+    };
+    expect(detail.bill_counts.total).toBe(2);
+    expect(detail.bill_counts.ok).toBe(2);
+
+    const html = await (await app.request(`/sites/${site.id}`, {}, withDb())).text();
+    expect(html).toContain('<tr class="estimated"><td>estimated</td><td>2025-02-01</td>');
+    expect(html).toContain("1 estimated period");
+    expect(html).toContain("1 missing month highlighted below.");
+  });
+
   it("keeps /api/health public and answers CORS preflight without a token", async () => {
     const health = await app.request("/api/health", {}, env({ API_TOKEN: undefined }));
     expect(health.status).toBe(200);
