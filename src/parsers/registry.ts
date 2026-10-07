@@ -9,11 +9,12 @@ import {
 } from "./base";
 import { fplGsd1Parser } from "./fpl";
 import { loganCityParser } from "./logan";
+import { midParser } from "./mid";
 import { nvEnergyParser } from "./nvenergy";
 import { rockyMountainParser } from "./rmp";
 import { sceParser } from "./sce";
 
-const PARSERS: readonly BillParser[] = [sceParser, nvEnergyParser, rockyMountainParser, loganCityParser, fplGsd1Parser];
+const PARSERS: readonly BillParser[] = [sceParser, nvEnergyParser, rockyMountainParser, loganCityParser, fplGsd1Parser, midParser];
 
 export function parsers(): readonly BillParser[] {
   return PARSERS;
