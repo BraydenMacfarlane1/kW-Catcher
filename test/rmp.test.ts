@@ -716,4 +716,48 @@ MILLCREEK UT 84106-3211
       expect(row?.other_charges_usd, start).toBe("0.00");
     }
   });
+
+  it("parses a Schedule 6 time-of-day bill with a power factor adjustment", () => {
+    const text = readFileSync(new URL("./fixtures/rmp-schedule6-pf-unpdf.txt", import.meta.url), "utf8");
+    const outcome = parseDocument(text, "rmp-schedule6-pf.pdf");
+    expect(outcome.rows).toHaveLength(1);
+    const [parsed] = outcome.rows;
+    expect(parsed?.status).toBe("ok");
+    const row = parsed!.fields;
+    expect(row.parser_id).toBe(RMP_PARSER_ID);
+    expect(row.customer_account).toBe("90000000-0010");
+    expect(row.meter_id).toBe("90000001");
+    expect(row.rate_schedule).toBe("6");
+    expect([row.billing_period_start, row.billing_period_end, row.billing_days]).toEqual(["2025-06-18", "2025-07-18", "30"]);
+    // On and off kWh are informational TOU buckets. kwh_total is the billed on + off (Energy Charge 318,080 kwh).
+    expect([row.kwh_total, row.kwh_on_peak, row.kwh_off_peak]).toEqual(["318080", "85440", "232640"]);
+    expect([row.kwh_mid_peak, row.kwh_super_off_peak]).toEqual(["", ""]);
+    // Metered demand. The billed 631 kw (Demand and Facilities Charge) is metered 609 + 22 kw power factor adjustment.
+    expect([row.demand_kw_max, row.demand_kw_on_peak, row.demand_kw_off_peak]).toEqual(["609", "609", "606"]);
+    expect(row.notes).toContain("billed demand 631 kw = metered 609 + power factor adjustment 22");
+    expect(row.notes).toContain("power factor adjustment 22 onkw / 22 offkw");
+    expect(row.notes).toContain("power factor 0.8525");
+
+    const items = lineItems(row);
+    expectLine(items, "55.00", "fee", /^Basic Charge/);
+    expectLine(items, "8651.01", "demand", /^Demand Charge/);
+    expectLine(items, "2599.72", "fee", /^Facilities Charge/);
+    expectLine(items, "12516.77", "energy", /^Energy Charge - Summer/);
+    expectLine(items, "-112.19", "fee", /^Renewable Energy/);
+    expectLine(items, "3730.19", "fee", /^for 18 day\(s\)/);
+    expectLine(items, "2232.78", "fee", /^for 12 day\(s\)/);
+    expectLine(items, "-0.50", "fee", /^Paperless Bill Credit/);
+    expectLine(items, "1852.57", "tax", /^Municipal Energy/);
+    expectLine(items, "2238.52", "tax", /^Utah Sales Tax/);
+    expect(items).toHaveLength(14);
+    expect([row.energy_charges_usd, row.demand_charges_usd, row.taxes_usd, row.fees_usd, row.other_charges_usd]).toEqual([
+      "12516.77",
+      "8651.01",
+      "4091.09",
+      "9714.00",
+      "0.00",
+    ]);
+    expect([row.total_new_charges_usd, row.amount_due_usd]).toEqual(["34972.87", "34972.87"]);
+    expect([row.bill_prepared_date, row.due_date]).toEqual(["2025-07-21", "2025-08-13"]);
+  });
 });

@@ -358,7 +358,7 @@ function parseChargeLine(raw: string): ChargeLine | null {
   const hasUnit = /\b(?:kwh|kw|kvarh|lamps|units)\b/i.test(line);
   const hasRate = /-?[\d,]+\.\d{3,}/.test(line);
   const named =
-    /^(Basic Charge|Demand Charge|Energy Charge|Renewable Energy|Energy Balancing|Wildfire|Customer Efficiency|Elec Vehicle|Home Electric|Municipal Energy|Utah Sales|Late Payment|Level \d|for \d+)/i.test(
+    /^(Basic Charge|Demand Charge|Energy Charge|Renewable Energy|Energy Balancing|Wildfire|Customer Efficiency|Elec Vehicle|Home Electric|Municipal Energy|Utah Sales|Late Payment|Paperless Bill Credit|Level \d|for \d+)/i.test(
       line,
     );
   if (!hasUnit && !hasRate && !named) return null;
@@ -587,6 +587,52 @@ function chargeChoices(text: string, hits: UsageHit[]): ChargeChoice[] {
   });
 }
 
+/**
+ * Power factor adjustment and billed demand, kept as a note. demand_kw_max stays the metered kW.
+ * Schedule 6 adds a Power Factor Adjustment (kW) to metered demand, and the Demand Charge and
+ * Facilities Charge lines bill that sum (e.g. 609 metered + 22 PF = 631 kw). PF lines belong to the
+ * meter whose read line comes right before them. Billed kW is only noted when it equals metered + PF,
+ * so a multi-meter statement never borrows another meter's Demand Charge.
+ */
+function powerFactorNote(after: string, meter: string, endLabel: string, meteredMax: string): string {
+  const wanted = endLabel.toLowerCase();
+  let current = false;
+  let done = false;
+  const adjustments: { kw: string; bucket: string }[] = [];
+  let factor = "";
+  for (const line of after.split("\n")) {
+    const read = /^\s*(\d{6,12})\s/.exec(line)?.[1];
+    if (read) {
+      const date = findDates(line)[0];
+      current = read === meter && /\bdemand\b/i.test(line) && Boolean(date) && dateLabel(date!).toLowerCase() === wanted;
+      if (!current && adjustments.length > 0) done = true;
+      if (done) break;
+      continue;
+    }
+    if (!current) continue;
+    const pf = /Power Factor Adjustment[ \t]+([\d.]+)[ \t]*(on|off)?kw\b/i.exec(line);
+    if (pf?.[1]) {
+      adjustments.push({ kw: String(Number(pf[1])), bucket: (pf[2] ?? "").toLowerCase() });
+      continue;
+    }
+    const pct = /Power Factor[ \t]+(0?\.\d+|1\.0+)(?![\d.])/i.exec(line);
+    if (pct?.[1]) {
+      factor = pct[1];
+      break;
+    }
+    if (/Next scheduled read|NEW CHARGES/i.test(line)) break;
+  }
+  if (adjustments.length === 0) return "";
+  const parts = [`power factor adjustment ${adjustments.map((a) => `${a.kw} ${a.bucket}kw`).join(" / ")}`];
+  if (factor) parts.push(`power factor ${factor}`);
+  const adj = Math.max(...adjustments.map((a) => Number(a.kw)));
+  const billed = /Demand Charge[ \t]+([\d,]+)[ \t]*kw\b/i.exec(after)?.[1];
+  if (billed && meteredMax && Number(plainNumber(billed)) === Number(meteredMax) + adj) {
+    parts.unshift(`billed demand ${plainNumber(billed)} kw = metered ${meteredMax} + power factor adjustment ${adj}`);
+  }
+  return parts.join(", ");
+}
+
 function parsePeriod(
   text: string,
   hit: UsageHit,
@@ -648,6 +694,8 @@ function parsePeriod(
     notes.push("equal payment plan; period cost is New Charges, not the installment amount due");
   }
   if (choice.note) notes.push(choice.note);
+  const pfNote = powerFactorNote(after, hit.meter, hit.endLabel, row.demand_kw_max);
+  if (pfNote) notes.push(pfNote);
   if (multi) notes.push("multi-statement pdf; row is this service period only");
   notes.push(tou ? "time-of-day; usage in kwh_on_peak and kwh_off_peak" : "non-TOU; usage in kwh_total");
 
