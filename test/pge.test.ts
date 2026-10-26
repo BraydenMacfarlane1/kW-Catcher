@@ -60,3 +60,28 @@ describe("PG&E reconciliation helpers", () => {
     expect(__pgeInternals.flatRate(4671185200, 487)).toBe(false);
   });
 });
+
+describe("PG&E service agreement ID vote", () => {
+  // Every copy: the Agreement ID on 10 delivery pages + Ava's "ESP Customer Number" on 10 CCA pages.
+  const pages = text.split(/(\n-{3,} PAGE -{3,}\n)/);
+
+  it("a misread on one page is outvoted by the other copies", () => {
+    const broken = [...pages];
+    broken[0] = broken[0]!.replace("Agreement ID; 9000000001", "Agreement ID; 9000000007");
+    expect(broken[0]).toContain("9000000007");
+    const rows = parseDocument(broken.join(""), "bill.pdf").rows;
+    expect(new Set(rows.map((r) => r.fields.service_account))).toEqual(new Set(["9000000001"]));
+    expect(rows.find((r) => r.fields.billing_period_start === "2026-08-19")!.status).toBe("ok");
+  });
+
+  it("without a clear majority every row goes to needs_review", () => {
+    let n = 0;
+    // rotate the copies between the right ID and two different misreads: no value holds a majority
+    const tied = text.replace(/^.*(?:Agreement|ESP).*$/gm, (line) =>
+      line.replace(/9000000001/g, () => ["9000000001", "9000000008", "9000000009"][n++ % 3]!),
+    );
+    expect(n).toBeGreaterThanOrEqual(18);
+    const rows = parseDocument(tied, "bill.pdf").rows;
+    expect(rows.every((r) => r.status === "failed" && /^needs_review: service agreement ID has no clear majority/.test(r.fields.notes))).toBe(true);
+  });
+});
