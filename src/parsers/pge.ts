@@ -646,7 +646,23 @@ function vote(values: string[]): string {
   return best;
 }
 
-function identity(pages: string[]): { account: string; sa: string; meter: string; street: string; city: string } {
+/** The value held by more than half of the copies, or "" when there is no clear majority. */
+function majority(values: string[]): string {
+  const best = vote(values);
+  return values.filter((v) => v === best).length * 2 > values.length ? best : "";
+}
+
+interface Identity {
+  account: string;
+  sa: string;
+  /** Every copy of the PG&E service agreement ID that was read, for the review note. */
+  saCopies: string[];
+  meter: string;
+  street: string;
+  city: string;
+}
+
+function identity(pages: string[]): Identity {
   const accounts: string[] = [];
   const sas: string[] = [];
   const meters: string[] = [];
@@ -654,12 +670,15 @@ function identity(pages: string[]): { account: string; sa: string; meter: string
   for (const page of pages) {
     for (const m of page.matchAll(/Account\s*No\W{0,4}\s*(\d{10})\s*-?\s*(\d)\b/gi)) accounts.push(`${m[1]}-${m[2]}`);
     const delivery = /Delivery\s+Charges/i.test(page);
-    for (const m of page.matchAll(/Agreement\s*ID\W{0,3}\s*(\d{10})\b/gi)) if (delivery) sas.push(m[1]!);
+    // The PG&E service agreement ID is printed on each delivery page and again on the CCA page as the
+    // "ESP Customer Number" (the CCA page's own "Service Agreement ID" is the CCA's, not PG&E's).
+    if (delivery) for (const m of page.matchAll(/Agreement\s*[I1l][D)]\W{0,3}\s*(\d{10})\b/gi)) sas.push(m[1]!);
+    for (const m of page.matchAll(/ESP\s*Customer\s*N\w*\W{0,3}\s*(\d{10})\b/gi)) sas.push(m[1]!);
     for (const m of page.matchAll(/Me[te]{2}r\s*#\W{0,6}(\d{10})\b/gi)) meters.push(m[1]!);
     for (const m of page.matchAll(/Service\s+For\W{0,3}\s*(\d{1,6}\s+[A-Z][A-Z ]+?(?:\s(?:CT|ST|AVE|RD|DR|BLVD|WAY|LN|PL|CIR))\b)/g)) streets.push(m[1]!.replace(/\s+/g, " "));
   }
   const city = pages.some((p) => /Union\s*City\s*Utility/i.test(p)) ? "UNION CITY" : "";
-  return { account: vote(accounts), sa: vote(sas), meter: vote(meters), street: vote(streets), city };
+  return { account: vote(accounts), sa: majority(sas), saCopies: sas, meter: vote(meters), street: vote(streets), city };
 }
 
 export function parsePgeBills(text: string, sourceFile: string): BillDraft[] {
@@ -683,7 +702,7 @@ function buildRow(
   d: DeliveryPage,
   c: CcaPage | null,
   period: { start: string; end: string; days: number },
-  id: ReturnType<typeof identity>,
+  id: Identity,
   sourceFile: string,
   ccaText: string,
 ): BillDraft {
@@ -703,9 +722,15 @@ function buildRow(
   row.bill_prepared_date = d.statementDate || labeledDate(ccaText, /Sta\w*\s*Date/i);
   row.due_date = d.dueDate || labeledDate(ccaText, /Due\s*Date/i);
   const notes: string[] = [];
-  const { choice, reason } = reconcile(d, c, period.days);
+  const reconciled = reconcile(d, c, period.days);
+  const { choice } = reconciled;
+  let { reason } = reconciled;
+  if (!id.sa) {
+    const seen = [...new Set(id.saCopies)].map((v) => `${v} x${id.saCopies.filter((x) => x === v).length}`).join(", ");
+    reason = `service agreement ID has no clear majority across pages (${seen || "none read"})${choice ? "" : `; ${reason}`}`;
+  }
   if (!c) notes.push("no generation page for this period");
-  if (!choice) {
+  if (!choice || !id.sa) {
     row.parse_confidence = "0.25";
     row.notes = [`needs_review: ${reason}`, ...notes].join("; ");
     return row;
