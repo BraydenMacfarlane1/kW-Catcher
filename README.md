@@ -271,3 +271,16 @@ Strongly recommended: `meter_id`, `service_account`, `customer_account`, `utilit
 Optional provenance: `energy_charges_usd`, `demand_charges_usd`, `energy_demand_combined_usd`, `taxes_usd`, `fees_usd`, `other_charges_usd` (residual), `electric_total_usd`, `non_electric_charges_usd`, `charges_tax_inclusive`, `embedded_tax_rate`, `total_new_charges_usd`, `amount_due_usd`, `due_date`, `bill_prepared_date`, `line_items_json`, `demand_kw_on_peak`, `demand_kw_mid_peak`, `demand_kw_off_peak`, `demand_kw_super_off_peak`, `notes`, `pod_id`, `rin`, `service_voltage`, `customer_name`.
 
 `energy_charges_usd + demand_charges_usd + taxes_usd + fees_usd + other_charges_usd` matches `total_new_charges_usd` within rounding. Meters are never aggregated into one row.
+
+## Scanned JBIG2 PDFs and PG&E B-10 + CCA bills
+
+Some copier scans (e.g. Xerox AltaLink) store pages as JBIG2 images. pdf.js 5 only decodes JBIG2 through an
+unbundled wasm module, so these pages used to OCR blank. `src/jbig2.js` + `src/arithmetic_decoder.js` are the
+pure-JS decoders vendored from pdf.js v4.10.38 (Apache-2.0), used by `src/fax.ts` like the CCITT path; a 3x3
+opening removes dither specks before OCR (~0.5 s decode per page).
+
+`src/parsers/pge.ts` (`pge-business-cca`) reads PG&E delivery statements plus the CCA (e.g. Ava Community Energy)
+generation page and writes one combined row per period: totals = delivery + generation, with the split,
+CCA name/product and rate segments in `notes`, and `provider` on each line item. OCR text is reconciled against
+the printed totals (qty x rate, 5% UUT on the pre-FFS base, per-kWh PCIA/FFS, CCA credits mirroring PG&E's PCIA/FFS);
+a statement that does not reconcile becomes `needs_review` (failed) rather than a guessed number.
