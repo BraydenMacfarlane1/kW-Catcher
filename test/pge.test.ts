@@ -82,6 +82,30 @@ describe("PG&E service agreement ID vote", () => {
     );
     expect(n).toBeGreaterThanOrEqual(18);
     const rows = parseDocument(tied, "bill.pdf").rows;
-    expect(rows.every((r) => r.status === "failed" && /^needs_review: service agreement ID has no clear majority/.test(r.fields.notes))).toBe(true);
+    expect(rows.every((r) => r.status === "failed" && /^needs_review: service agreement ID has no clear leader/.test(r.fields.notes))).toBe(true);
+  });
+});
+
+describe("PG&E service agreement ID leader rule", () => {
+  const copies = (spec: Array<[string, number]>): string[] => spec.flatMap(([v, n]) => Array<string>(n).fill(v));
+
+  it("accepts the live 8/3/2/1 split (leader has 3+ copies and twice the runner-up)", () => {
+    const live = copies([["A", 8], ["B", 3], ["C", 2], ["D", 1], ["E", 1], ["F", 1], ["G", 1], ["H", 1]]);
+    expect(__pgeInternals.majority(live)).toBe("A");
+  });
+
+  it("reviews a near split, a lone copy, and a tie", () => {
+    expect(__pgeInternals.majority(copies([["A", 8], ["B", 5], ["C", 1]]))).toBe("");
+    expect(__pgeInternals.majority(copies([["A", 2]]))).toBe("");
+    expect(__pgeInternals.majority(copies([["A", 4], ["B", 4]]))).toBe("");
+  });
+
+  it("an 8/3/2 split on the fixture keeps the ok rows and the right ID", () => {
+    let n = 0;
+    const plan = ["9000000001", "9000000001", "9000000008", "9000000001", "9000000007"];
+    const split = text.replace(/^.*(?:Agreement|ESP).*$/gm, (line) => line.replace(/9000000001/g, () => plan[n++ % plan.length]!));
+    const rows = parseDocument(split, "bill.pdf").rows;
+    expect(new Set(rows.map((r) => r.fields.service_account))).toEqual(new Set(["9000000001"]));
+    expect(rows.filter((r) => r.status === "ok").length).toBeGreaterThanOrEqual(4);
   });
 });

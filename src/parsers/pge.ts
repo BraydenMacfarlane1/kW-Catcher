@@ -646,10 +646,16 @@ function vote(values: string[]): string {
   return best;
 }
 
-/** The value held by more than half of the copies, or "" when there is no clear majority. */
+/**
+ * The most common copy when it is clearly ahead: at least 3 copies and at least twice the runner-up.
+ * Otherwise "" (the caller sends the rows to needs_review).
+ */
 function majority(values: string[]): string {
-  const best = vote(values);
-  return values.filter((v) => v === best).length * 2 > values.length ? best : "";
+  const counts = new Map<string, number>();
+  for (const v of values) if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
+  const [first, second] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  if (!first || first[1] < 3) return "";
+  return first[1] >= 2 * (second?.[1] ?? 0) ? first[0] : "";
 }
 
 interface Identity {
@@ -727,7 +733,7 @@ function buildRow(
   let { reason } = reconciled;
   if (!id.sa) {
     const seen = [...new Set(id.saCopies)].map((v) => `${v} x${id.saCopies.filter((x) => x === v).length}`).join(", ");
-    reason = `service agreement ID has no clear majority across pages (${seen || "none read"})${choice ? "" : `; ${reason}`}`;
+    reason = `service agreement ID has no clear leader across pages (${seen || "none read"})${choice ? "" : `; ${reason}`}`;
   }
   if (!c) notes.push("no generation page for this period");
   if (!choice || !id.sa) {
@@ -800,4 +806,4 @@ function label(b: Bucket): string {
   return { peak: "Peak", part_peak: "Part Peak", off_peak: "Off Peak", super_off_peak: "Super Off Peak" }[b];
 }
 /** Test-only access to the stages. */
-export const __pgeInternals = { parseDelivery, parseCca, reconcile, lineOptions, flatRate };
+export const __pgeInternals = { parseDelivery, parseCca, reconcile, lineOptions, flatRate, majority };
